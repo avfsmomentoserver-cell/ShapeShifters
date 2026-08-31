@@ -266,8 +266,8 @@ class CrashAnalyzer:
         fid = self.db.save_forecast(
             round_id=None,
             component_type='streak',
-            result.streak_analysis,
-            result.streak_analysis.get('probability_continuation', 0.5)
+            prediction=result.streak_analysis,
+            confidence=result.streak_analysis.get('probability_continuation', 0.5)
         )
         forecast_ids.append(fid)
         

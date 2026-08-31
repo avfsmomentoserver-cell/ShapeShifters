@@ -8,33 +8,40 @@ __pycache__/
 env/
 venv/
 .venv/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
+.venv-*/
+.ENV
+.env
+.env.*
+.pytest_cache/
+.mypy_cache/
 .coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
+coverage/
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+target/
+
+# Dependencies
+node_modules/
+vendor/bundle/
+.PHONY:
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
 *.log
+
+# OS
 .DS_Store
 Thumbs.db
 
-# Dependencies
-requirements.txt.bak
-
-# IDE
-.vscode/
-.idea/
-
-# Database
-*.db
-*.db-journal
-
 # Environment
-.env
 .env.local
-.env.*
-!.env.example
 ```
