@@ -1,0 +1,144 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here.
+All colors MUST be HSL.
+Dark "research terminal" theme ported from the shapeshifters source (slate-900 canvas,
+sky-500 primary, crash accent scale). */
+
+@layer base {
+  :root {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 44% 13%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 44% 12%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 199 89% 48%;
+    --primary-foreground: 222 47% 8%;
+
+    --secondary: 217 33% 18%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 217 33% 18%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 33% 20%;
+    --input: 217 33% 20%;
+    --ring: 199 89% 48%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 199 89% 48%;
+    --sidebar-primary-foreground: 222 47% 8%;
+    --sidebar-accent: 217 33% 18%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 217 33% 20%;
+    --sidebar-ring: 199 89% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "tnum" 1, "cv05" 1;
+    background-image:
+      radial-gradient(1100px 500px at 80% -10%, rgba(14, 165, 233, 0.08), transparent 60%),
+      radial-gradient(900px 420px at -10% 110%, rgba(168, 85, 247, 0.06), transparent 60%),
+      linear-gradient(to bottom right, rgb(2 6 23), rgb(15 23 42), rgb(2 6 23));
+    background-attachment: fixed;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #1e293b;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #475569;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-slate-700/70 bg-slate-800/40 p-6 shadow-lg shadow-slate-950/40 backdrop-blur-sm;
+  }
+
+  .stat-card {
+    @apply rounded-xl border border-slate-700/70 bg-gradient-to-br from-slate-800/70 to-slate-900/70 p-4 shadow-md shadow-slate-950/30 backdrop-blur-sm;
+  }
+
+  .chart-container {
+    @apply rounded-xl border border-slate-700/70 bg-slate-800/25 p-4 backdrop-blur-sm;
+  }
+
+  .btn-primary {
+    @apply rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground transition-colors duration-200 hover:bg-sky-400;
+  }
+
+  .btn-secondary {
+    @apply rounded-lg bg-slate-700 px-4 py-2 font-medium text-slate-100 transition-colors duration-200 hover:bg-slate-600;
+  }
+}
+
+/* Live pulse for connection + active-zone indicators */
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.live-indicator {
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+/* Soft shimmer sweep for the bundle/download bar */
+@keyframes bundle-sheen {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+.bundle-sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(100deg, transparent, rgba(56, 189, 248, 0.14), transparent);
+  animation: bundle-sheen 3.2s ease-in-out infinite;
+  pointer-events: none;
+}

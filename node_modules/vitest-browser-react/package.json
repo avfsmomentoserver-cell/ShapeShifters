@@ -1,0 +1,84 @@
+{
+  "name": "vitest-browser-react",
+  "type": "module",
+  "version": "2.2.0",
+  "description": "Render React components in Vitest Browser Mode",
+  "author": "Vitest Team",
+  "license": "MIT",
+  "funding": "https://opencollective.com/vitest",
+  "homepage": "https://github.com/vitest-community/vitest-browser-react#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vitest-community/vitest-browser-react.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vitest-community/vitest-browser-react/issues"
+  },
+  "keywords": [
+    "react",
+    "vitest",
+    "browser",
+    "testing"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./pure": {
+      "types": "./dist/pure.d.ts",
+      "default": "./dist/pure.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "@types/react": "^18.0.0 || ^19.0.0",
+    "@types/react-dom": "^18.0.0 || ^19.0.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0",
+    "vitest": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/react": {
+      "optional": true
+    },
+    "@types/react-dom": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^2.24.1",
+    "@playwright/test": "^1.58.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "@vitest/browser-playwright": "4.1.0-beta.6",
+    "bumpp": "^9.4.2",
+    "changelogithub": "^0.13.9",
+    "eslint": "^9.8.0",
+    "playwright": "^1.58.2",
+    "react": "^19.0.0",
+    "react-aria-components": "^1.10.1",
+    "react-dom": "^19.0.0",
+    "tsdown": "^0.15.9",
+    "tsx": "^4.17.0",
+    "typescript": "^5.5.4",
+    "vitest": "4.1.0-beta.6",
+    "zx": "^8.1.4"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch --sourcemap",
+    "test": "vitest",
+    "publish-ci": "tsx scripts/publish-ci.ts",
+    "release": "tsx scripts/release.ts",
+    "lint": "eslint --cache .",
+    "lint:fix": "pnpm lint --fix"
+  }
+}
