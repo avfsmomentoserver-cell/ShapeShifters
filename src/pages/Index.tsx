@@ -1,41 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Activity, Clock, TrendingUp, Zap } from "lucide-react";
 import Dashboard from "@/components/Dashboard";
-import { calculateEta, computeQuickStats, makeRound, seedRounds } from "@/lib/analysis";
-import type { Round } from "@/lib/types";
-
-const TICK_MS = 3000;
+import LiveFeedReceiver from "@/components/LiveFeedReceiver";
+import { calculateEta, computeQuickStats } from "@/lib/analysis";
+import { useLiveRounds } from "@/hooks/useLiveRounds";
 
 const Index = () => {
-  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected">("connecting");
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [rounds, setRounds] = useState<Round[]>(() => seedRounds(50, TICK_MS));
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setConnectionStatus("connected");
-      setLastUpdate(new Date());
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    if (connectionStatus !== "connected") return;
-    const interval = setInterval(() => setLastUpdate(new Date()), 1000);
-    return () => clearInterval(interval);
-  }, [connectionStatus]);
-
-  // Lightweight mirror feed powering the header quick stats (the dashboard
-  // owns the canonical feed used by the analyzers).
-  useEffect(() => {
-    if (connectionStatus !== "connected") return;
-    const interval = setInterval(() => {
-      setRounds((prev) => [...prev.slice(1), makeRound(Date.now(), new Date(), prev)]);
-    }, TICK_MS);
-    return () => clearInterval(interval);
-  }, [connectionStatus]);
-
-  const stats = useMemo(() => computeQuickStats(rounds, calculateEta(1, rounds)), [rounds]);
+  const feed = useLiveRounds();
+  const lastUpdate = feed.rounds.at(-1)?.timestamp ? new Date(feed.rounds.at(-1)!.timestamp) : null;
+  const isLive = feed.status === "watching" || feed.status === "imported";
+  const stats = useMemo(
+    () => computeQuickStats(feed.rounds, calculateEta(feed.currentMultiplier ?? 1, feed.rounds)),
+    [feed.currentMultiplier, feed.rounds],
+  );
 
   return (
     <div className="min-h-screen">
@@ -63,17 +40,17 @@ const Index = () => {
 
               <div
                 className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${
-                  connectionStatus === "connected"
+                  isLive
                     ? "bg-green-500/20 text-green-400"
                     : "bg-yellow-500/20 text-yellow-400"
                 }`}
               >
                 <div
                   className={`h-2 w-2 rounded-full ${
-                    connectionStatus === "connected" ? "live-indicator bg-green-400" : "bg-yellow-400"
+                    isLive ? "live-indicator bg-green-400" : "bg-yellow-400"
                   }`}
                 />
-                <span>{connectionStatus === "connected" ? "Live" : "Connecting..."}</span>
+                <span>{isLive ? "Live" : "Waiting"}</span>
               </div>
             </div>
           </div>
@@ -82,6 +59,10 @@ const Index = () => {
 
       {/* Main */}
       <main className="container mx-auto px-4 py-6">
+        <div className="mb-6">
+          <LiveFeedReceiver feed={feed} />
+        </div>
+
         {/* Quick Stats Bar */}
         <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-4">
           <div className="stat-card flex items-center gap-3">
@@ -125,7 +106,7 @@ const Index = () => {
           </div>
         </div>
 
-        <Dashboard />
+        <Dashboard roundData={feed.rounds} currentMultiplier={feed.currentMultiplier} />
       </main>
 
       {/* Footer */}

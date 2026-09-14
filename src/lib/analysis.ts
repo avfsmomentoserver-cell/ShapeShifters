@@ -1,7 +1,7 @@
 /**
  * Analysis engine — deterministic, testable math ported from the source
  * dashboard components (shape classification, streaks, dry zones, moonshot
- * clusters, stochastic ETA) plus the simulated live round feed.
+ * clusters, and stochastic ETA).
  *
  * The original MoonshotForecaster.jsx contained a syntax error
  * ("building Momentum") — the momentum calculation here is the corrected,
@@ -151,45 +151,6 @@ export function classifyShapeAdvanced(
   );
 
   return { shape, confidence: Math.min(confidence, 0.98), features };
-}
-
-/**
- * Curve-shape model: a heavy-tailed mixture where most rounds die early and
- * rare rounds extend. The feed uses an inverse-transform sample of a
- * house-edge style distribution so shape frequencies stay realistic
- * (roughly half of rounds below 2x, long tail beyond).
- */
-function sampleCrashMultiplier(): number {
-  const u = Math.random();
-  // 1% instant-crash floor, geometric-ish tail: M = 1 / (1 - 0.96u)
-  const m = 1 / Math.max(0.04, 1 - 0.96 * u);
-  return Math.min(60, parseFloat(m.toFixed(2)));
-}
-
-export function makeRound(id: number, at: Date, history: Round[] = []): Round {
-  const multiplier = sampleCrashMultiplier();
-  const { shape, confidence, features } = classifyShapeAdvanced(
-    multiplier,
-    history,
-  );
-  return {
-    id,
-    timestamp: at.toISOString(),
-    time: at.toLocaleTimeString(),
-    multiplier,
-    shape,
-    confidence,
-    features,
-  };
-}
-
-export function seedRounds(count: number, intervalMs: number): Round[] {
-  const now = Date.now();
-  const rounds: Round[] = [];
-  for (let i = count; i > 0; i--) {
-    rounds.push(makeRound(i, new Date(now - i * intervalMs), rounds));
-  }
-  return rounds;
 }
 
 // ---------------------------------------------------------------------------

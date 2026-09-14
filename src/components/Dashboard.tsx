@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   BarChart3,
   BookOpenText,
-  Pause,
   Play,
   Radar,
   RefreshCw,
@@ -29,7 +28,7 @@ import ETAEstimator from "@/components/analyzers/ETAEstimator";
 import ResearchLibrary from "@/components/ResearchLibrary";
 import SignalEngine from "@/components/SignalEngine";
 import DownloadSourceButton from "@/components/DownloadSourceButton";
-import { computeQuickStats, makeRound, seedRounds } from "@/lib/analysis";
+import { computeQuickStats } from "@/lib/analysis";
 import type { Round, ShapeId } from "@/lib/types";
 
 type TabId =
@@ -53,35 +52,15 @@ const TABS: { id: TabId; label: string; icon: React.ComponentType<{ className?: 
   { id: "research", label: "Research", icon: BookOpenText },
 ];
 
-const TICK_MS = 3000;
-
-export default function Dashboard() {
+export default function Dashboard({
+  roundData,
+  currentMultiplier,
+}: {
+  roundData: Round[];
+  currentMultiplier: number | null;
+}) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
-  const [isAutoRefresh, setIsAutoRefresh] = useState(true);
-  const [roundData, setRoundData] = useState<Round[]>(() => seedRounds(50, TICK_MS));
-  const [currentMultiplier, setCurrentMultiplier] = useState(1.0);
   const [selectedShape, setSelectedShape] = useState<ShapeId | null>(null);
-
-  // Live feed: a new crash round every TICK_MS, multiplier ticking in between.
-  useEffect(() => {
-    if (!isAutoRefresh) return;
-
-    const interval = setInterval(() => {
-      setCurrentMultiplier((prev) => {
-        const next = prev + 0.01 + Math.random() * 0.05;
-        return next > 10 ? 1.0 : parseFloat(next.toFixed(2));
-      });
-
-      setRoundData((prev) => [...prev.slice(1), makeRound(Date.now(), new Date(), prev)]);
-    }, TICK_MS);
-
-    return () => clearInterval(interval);
-  }, [isAutoRefresh]);
-
-  const handleReset = useCallback(() => {
-    setRoundData(seedRounds(50, TICK_MS));
-    setCurrentMultiplier(1.0);
-  }, []);
 
   const eta = useMemo(() => roundData, [roundData]); // history reference
   const quickStats = useMemo(
@@ -99,26 +78,8 @@ export default function Dashboard() {
                 <div>
                   <h3 className="text-lg font-semibold text-white">Live Multiplier Curve</h3>
                   <p className="font-mono text-xs text-slate-500">
-                    current tick: {currentMultiplier.toFixed(2)}x
+                    latest round: {currentMultiplier !== null ? `${currentMultiplier.toFixed(2)}x` : "waiting for feed"}
                   </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setIsAutoRefresh(!isAutoRefresh)}
-                    className={`rounded-lg p-2 transition-colors ${
-                      isAutoRefresh ? "bg-primary text-primary-foreground" : "bg-slate-700 text-slate-300"
-                    }`}
-                    title={isAutoRefresh ? "Pause feed" : "Resume feed"}
-                  >
-                    {isAutoRefresh ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                  </button>
-                  <button
-                    onClick={handleReset}
-                    className="rounded-lg bg-slate-700 p-2 text-slate-300 transition-colors hover:bg-slate-600"
-                    title="Reset data"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                  </button>
                 </div>
               </div>
 
@@ -167,7 +128,7 @@ export default function Dashboard() {
               <MoonshotForecaster data={roundData} />
             </div>
 
-            <ETAEstimator currentMultiplier={currentMultiplier} history={eta} />
+            <ETAEstimator currentMultiplier={currentMultiplier ?? 1} history={eta} />
           </div>
         );
       case "shapes":
@@ -181,7 +142,7 @@ export default function Dashboard() {
       case "moonshots":
         return <MoonshotForecaster data={roundData} fullView />;
       case "eta":
-        return <ETAEstimator currentMultiplier={currentMultiplier} history={roundData} fullView />;
+        return <ETAEstimator currentMultiplier={currentMultiplier ?? 1} history={roundData} fullView />;
       case "research":
         return <ResearchLibrary rounds={roundData} />;
       default:

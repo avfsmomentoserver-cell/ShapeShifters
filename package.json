@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "server": "node server/live-db.mjs",
+    "dev:full": "npm run server",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
