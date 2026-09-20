@@ -5,16 +5,39 @@ dry zone prediction, moonshot forecasting, and ETA estimation.
 """
 
 import numpy as np
+import requests
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 import time
 
+# Watcher API configuration - single source of truth for round data
+WATCHER_API_URL = "http://localhost:8787"
+
 from src.lib.math_models import (
     ParetoDistribution, ExponentialCrashModel, MarkovChainStreakAnalyzer,
     GaussianMixtureClusterAnalyzer, ETAEstimator, CurveShapeClassifier,
-    DryZonePredictor, MoonshotForecaster, analyze_crash_data
+    DryZonePredictor, MoonshotForecaster, analyze_crash_data,
+    AdaptiveParameterEstimator, EnsemblePredictor, HiddenMarkovRegimeDetector
 )
 from src.db.database import DatabaseConnector, Round
+
+
+def convert_numpy_types(obj):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.ndarray):
+        return convert_numpy_types(obj.tolist())
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    else:
+        return obj
 
 
 @dataclass
@@ -29,6 +52,12 @@ class AnalysisResult:
     eta_estimate: Optional[Dict]
     pareto_parameters: Dict
     basic_statistics: Dict
+    regime_change_detected: bool = False
+    stability_score: float = 0.5
+    ensemble_predictions: Optional[Dict] = None
+    hmm_regime_info: Optional[Dict] = None
+    regime_transition: bool = False
+    regime_statistics: Optional[List[Dict]] = None
 
 
 class CrashAnalyzer:
@@ -56,6 +85,9 @@ class CrashAnalyzer:
         self.dry_predictor = DryZonePredictor(low_threshold=2.0, window_size=50)
         self.moonshot_forecaster = MoonshotForecaster(moonshot_threshold=5.0, lookback_window=200)
         self.eta_estimator = ETAEstimator(prior_alpha=2.0, prior_xm=1.0)
+        self.adaptive_estimator = AdaptiveParameterEstimator(window_size=100, smoothing_factor=0.1)
+        self.ensemble_predictor = EnsemblePredictor()
+        self.hmm_detector = HiddenMarkovRegimeDetector(n_regimes=3)
         
         # Cache for recent analysis
         self._last_analysis: Optional[AnalysisResult] = None
@@ -63,7 +95,19 @@ class CrashAnalyzer:
         self._cache_validity_seconds: float = 5.0
     
     def get_multipliers(self, limit: int = 1000) -> np.ndarray:
-        """Fetch multipliers from database"""
+        """Fetch multipliers from watcher API (~/Downloads rounds only)"""
+        try:
+            response = requests.get("http://localhost:8787/api/rounds")
+            if response.status_code == 200:
+                data = response.json()
+                multipliers = [round['multiplier'] for round in data.get('rounds', [])]
+                if limit:
+                    multipliers = multipliers[-limit:]
+                return np.array(multipliers)
+        except Exception as e:
+            print(f"Error fetching from watcher API: {e}")
+        
+        # Fallback to database
         return self.db.get_all_multipliers(limit=limit)
     
     def analyze(self, multipliers: Optional[np.ndarray] = None, 
@@ -83,7 +127,7 @@ class CrashAnalyzer:
         if (self._last_analysis is not None and 
             not force_refresh and 
             current_time - self._cache_timestamp < self._cache_validity_seconds):
-            return self._last_analysis
+            return convert_numpy_types(asdict(self._last_analysis))
         
         # Get data if not provided
         if multipliers is None:
@@ -92,16 +136,31 @@ class CrashAnalyzer:
         if len(multipliers) < 10:
             raise ValueError("Need at least 10 data points for analysis")
         
-        # Run all analyses
+        # Run all analyses with adaptive parameters
         basic_stats = self._compute_basic_statistics(multipliers)
-        pareto_params = self._fit_pareto(multipliers)
+        pareto_params = self._fit_pareto_adaptive(multipliers)
         curve_shape = self._analyze_curve_shape(multipliers)
-        streak_result = self._analyze_streaks(multipliers)
+        streak_result = self._analyze_streaks_adaptive(multipliers)
         dry_zone = self._predict_dry_zone(multipliers)
         moonshot = self._forecast_moonshot(multipliers)
+        ensemble_result = self._generate_ensemble_predictions(multipliers)
         
         # Update ETA estimator with historical data
         self.eta_estimator.update(multipliers)
+        
+        # Check for regime changes using adaptive estimator and HMM
+        regime_change_detected = self.adaptive_estimator.detect_regime_change(multipliers)
+        stability_score = self.adaptive_estimator.get_parameter_stability_score()
+        
+        try:
+            self.hmm_detector.fit(multipliers)
+            hmm_regime_info = self.hmm_detector.get_current_regime(multipliers)
+            regime_transition = self.hmm_detector.detect_regime_transition(multipliers)
+            regime_stats = self.hmm_detector.get_regime_statistics(multipliers)
+        except Exception as e:
+            hmm_regime_info = {'error': str(e)}
+            regime_transition = False
+            regime_stats = []
         
         result = AnalysisResult(
             timestamp=current_time,
@@ -112,7 +171,13 @@ class CrashAnalyzer:
             streak_analysis=streak_result,
             dry_zone_prediction=dry_zone,
             moonshot_forecast=moonshot,
-            eta_estimate=None  # Set separately during live rounds
+            eta_estimate=None,  # Set separately during live rounds
+            regime_change_detected=bool(regime_change_detected),
+            stability_score=float(stability_score),
+            ensemble_predictions=ensemble_result,
+            hmm_regime_info=hmm_regime_info,
+            regime_transition=bool(regime_transition),
+            regime_statistics=regime_stats
         )
         
         # Cache result
@@ -162,22 +227,41 @@ class CrashAnalyzer:
             'coefficient_of_variation': float(np.std(multipliers) / np.mean(multipliers)) if np.mean(multipliers) > 0 else 0
         }
     
-    def _fit_pareto(self, multipliers: np.ndarray) -> Dict:
-        """Fit Pareto distribution and return parameters"""
-        pareto = ParetoDistribution()
-        xm_hat, alpha_hat = pareto.fit_mle(multipliers)
+    def _fit_pareto_adaptive(self, multipliers: np.ndarray) -> Dict:
+        """Fit Pareto distribution with adaptive parameter estimation"""
+        alpha, xm = self.adaptive_estimator.estimate_pareto_adaptive(multipliers)
         
         # Goodness of fit test
         ks_stat, p_value = ParetoDistribution.kstest_pareto(multipliers)
         
         return {
-            'x_m': float(xm_hat),
-            'alpha': float(alpha_hat),
-            'mean_theoretical': float(pareto.mean()) if alpha_hat > 1 else None,
-            'variance_theoretical': float(pareto.variance()) if alpha_hat > 2 else None,
+            'x_m': float(xm),
+            'alpha': float(alpha),
+            'mean_theoretical': float(self.adaptive_estimator.parameter_history['pareto_alpha'][-1] * xm / (self.adaptive_estimator.parameter_history['pareto_alpha'][-1] - 1)) if self.adaptive_estimator.parameter_history['pareto_alpha'][-1] > 1 else None,
+            'variance_theoretical': float(self.adaptive_estimator.parameter_history['pareto_alpha'][-1] * (xm ** 2) / ((self.adaptive_estimator.parameter_history['pareto_alpha'][-1] - 1) ** 2 * (self.adaptive_estimator.parameter_history['pareto_alpha'][-1] - 2))) if self.adaptive_estimator.parameter_history['pareto_alpha'][-1] > 2 else None,
             'ks_statistic': float(ks_stat),
             'p_value': float(p_value),
-            'is_good_fit': p_value > 0.05
+            'is_good_fit': p_value > 0.05,
+            'adaptive': True,
+            'stability_score': self.adaptive_estimator.get_parameter_stability_score()
+        }
+    
+    def _analyze_streaks_adaptive(self, multipliers: np.ndarray) -> Dict:
+        """Analyze win/loss streaks using adaptive Markov chains"""
+        result = self.streak_analyzer.analyze_streak(multipliers)
+        
+        # Get adaptive transition matrix
+        adaptive_matrix = self.adaptive_estimator.estimate_markov_adaptive(multipliers)
+        
+        return {
+            'current_streak': int(result.current_streak),
+            'streak_type': result.streak_type,
+            'expected_duration': float(result.expected_duration) if result.expected_duration != float('inf') else None,
+            'probability_continuation': float(result.probability_continuation),
+            'historical_max_streak': int(result.historical_max_streak),
+            'transition_matrix': [[float(x) for x in row] for row in adaptive_matrix.tolist()],
+            'adaptive': True,
+            'stability_score': float(self.adaptive_estimator.get_parameter_stability_score())
         }
     
     def _analyze_curve_shape(self, multipliers: np.ndarray) -> Dict:
@@ -198,19 +282,6 @@ class CrashAnalyzer:
                 'r_squared': 0.0,
                 'error': str(e)
             }
-    
-    def _analyze_streaks(self, multipliers: np.ndarray) -> Dict:
-        """Analyze win/loss streaks using Markov chains"""
-        result = self.streak_analyzer.analyze_streak(multipliers)
-        
-        return {
-            'current_streak': int(result.current_streak),
-            'streak_type': result.streak_type,
-            'expected_duration': float(result.expected_duration) if result.expected_duration != float('inf') else None,
-            'probability_continuation': float(result.probability_continuation),
-            'historical_max_streak': int(result.historical_max_streak),
-            'transition_matrix': result.transition_matrix.tolist()
-        }
     
     def _predict_dry_zone(self, multipliers: np.ndarray) -> Dict:
         """Predict upcoming dry zones"""
@@ -234,6 +305,45 @@ class CrashAnalyzer:
             'confidence_interval': [float(result.confidence_interval[0]), 
                                    float(result.confidence_interval[1])],
             'clusters': cluster_info
+        }
+    
+    def _analyze_streaks_adaptive(self, multipliers: np.ndarray) -> Dict:
+        """Analyze win/loss streaks using adaptive Markov chains"""
+        result = self.streak_analyzer.analyze_streak(multipliers)
+        
+        # Get adaptive transition matrix
+        adaptive_matrix = self.adaptive_estimator.estimate_markov_adaptive(multipliers)
+        
+        return {
+            'current_streak': int(result.current_streak),
+            'streak_type': result.streak_type,
+            'expected_duration': float(result.expected_duration) if result.expected_duration != float('inf') else None,
+            'probability_continuation': float(result.probability_continuation),
+            'historical_max_streak': int(result.historical_max_streak),
+            'transition_matrix': [[float(x) for x in row] for row in adaptive_matrix.tolist()],
+            'adaptive': True,
+            'stability_score': float(self.adaptive_estimator.get_parameter_stability_score())
+        }
+    
+    def _generate_ensemble_predictions(self, multipliers: np.ndarray) -> Dict:
+        """Generate ensemble predictions using multiple models"""
+        # Predict probability of moonshot (≥5x)
+        moonshot_result = self.ensemble_predictor.predict_multiplier_probability(multipliers, 5.0)
+        
+        # Predict probability of moderate win (≥2x)
+        moderate_result = self.ensemble_predictor.predict_multiplier_probability(multipliers, 2.0)
+        
+        # Get model disagreement
+        disagreement = self.ensemble_predictor.get_model_disagreement(multipliers, 5.0)
+        
+        return {
+            'moonshot_probability': moonshot_result['probability'],
+            'moonshot_confidence': moonshot_result['confidence'],
+            'moderate_win_probability': moderate_result['probability'],
+            'moderate_win_confidence': moderate_result['confidence'],
+            'model_disagreement': disagreement,
+            'model_weights': moonshot_result['model_weights'],
+            'individual_predictions': moonshot_result['individual_predictions']
         }
     
     def _forecast_moonshot(self, multipliers: np.ndarray) -> Dict:

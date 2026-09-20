@@ -7,10 +7,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict
+from dataclasses import asdict
 import numpy as np
 import time
 
-from src.analyzer import CrashAnalyzer, AnalysisResult
+from src.analyzer import CrashAnalyzer, AnalysisResult, convert_numpy_types
 from src.db.database import DatabaseConnector
 
 
@@ -98,16 +99,26 @@ async def full_analysis(limit: int = Query(1000, ge=10, le=10000)):
     try:
         result = analyzer.analyze(force_refresh=True)
         
+        # Convert numpy types for JSON serialization
+        result_dict = convert_numpy_types(asdict(result))
+        
         return {
             "success": True,
-            "timestamp": result.timestamp,
-            "rounds_analyzed": result.rounds_analyzed,
-            "basic_statistics": result.basic_statistics,
-            "pareto_parameters": result.pareto_parameters,
-            "curve_shape": result.curve_shape,
-            "streak_analysis": result.streak_analysis,
-            "dry_zone_prediction": result.dry_zone_prediction,
-            "moonshot_forecast": result.moonshot_forecast
+            "timestamp": result_dict["timestamp"],
+            "rounds_analyzed": result_dict["rounds_analyzed"],
+            "basic_statistics": result_dict["basic_statistics"],
+            "pareto_parameters": result_dict["pareto_parameters"],
+            "curve_shape": result_dict["curve_shape"],
+            "streak_analysis": result_dict["streak_analysis"],
+            "dry_zone_prediction": result_dict["dry_zone_prediction"],
+            "moonshot_forecast": result_dict["moonshot_forecast"],
+            "eta_estimate": result_dict["eta_estimate"],
+            "regime_change_detected": result_dict["regime_change_detected"],
+            "stability_score": result_dict["stability_score"],
+            "ensemble_predictions": result_dict["ensemble_predictions"],
+            "hmm_regime_info": result_dict["hmm_regime_info"],
+            "regime_transition": result_dict["regime_transition"],
+            "regime_statistics": result_dict["regime_statistics"]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

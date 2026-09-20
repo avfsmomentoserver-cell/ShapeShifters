@@ -66,6 +66,521 @@ class ETAEstimate:
     survival_probability: float
 
 
+class HiddenMarkovRegimeDetector:
+    """
+    Hidden Markov Model for regime detection in crash data.
+    
+    Identifies different statistical regimes (e.g., high volatility, low volatility,
+    trending patterns) using HMM with Gaussian emissions.
+    """
+    
+    def __init__(self, n_regimes: int = 3, random_state: int = 42):
+        self.n_regimes = n_regimes
+        self.random_state = random_state
+        self.hmm = None
+        self.regime_names = {
+            0: 'low_volatility',
+            1: 'moderate_volatility', 
+            2: 'high_volatility'
+        }
+        
+    def fit(self, multipliers: np.ndarray) -> 'HiddenMarkovRegimeDetector':
+        """
+        Fit HMM to log-transformed multiplier data.
+        
+        Uses Gaussian HMM to model different volatility regimes.
+        """
+        try:
+            from hmmlearn import hmm
+        except ImportError:
+            # Fallback: use simple threshold-based regime detection
+            self._fit_simple_regimes(multipliers)
+            return self
+        
+        # Log transform for better modeling
+        log_data = np.log(multipliers).reshape(-1, 1)
+        
+        # Fit Gaussian HMM
+        self.hmm = hmm.GaussianHMM(
+            n_components=self.n_regimes,
+            covariance_type="diag",
+            n_init=10,
+            random_state=self.random_state
+        )
+        self.hmm.fit(log_data)
+        
+        return self
+    
+    def _fit_simple_regimes(self, multipliers: np.ndarray):
+        """
+        Fallback simple regime detection using volatility thresholds.
+        """
+        # Calculate rolling volatility
+        window = min(50, len(multipliers) // 2)
+        if window < 5:
+            window = 5
+            
+        rolling_vol = []
+        for i in range(len(multipliers) - window + 1):
+            window_data = multipliers[i:i+window]
+            rolling_vol.append(np.std(window_data))
+        
+        # Pad with mean
+        for _ in range(window - 1):
+            rolling_vol.insert(0, np.mean(rolling_vol))
+        
+        # Classify regimes based on volatility
+        vol_mean = np.mean(rolling_vol)
+        vol_std = np.std(rolling_vol)
+        
+        regimes = []
+        for vol in rolling_vol:
+            if vol < vol_mean - vol_std:
+                regimes.append(0)  # Low volatility
+            elif vol > vol_mean + vol_std:
+                regimes.append(2)  # High volatility
+            else:
+                regimes.append(1)  # Moderate volatility
+        
+        self.hmm = type('SimpleHMM', (), {
+            'predict': lambda x: np.array(regimes[:len(x)]),
+            'n_components': self.n_regimes,
+            'transmat_': np.ones((self.n_regimes, self.n_regimes)) / self.n_regimes
+        })()
+    
+    def predict_regimes(self, multipliers: np.ndarray) -> np.ndarray:
+        """Predict regime for each data point"""
+        if self.hmm is None:
+            raise ValueError("HMM not fitted. Call fit() first.")
+        
+        log_data = np.log(multipliers).reshape(-1, 1)
+        return self.hmm.predict(log_data)
+    
+    def get_current_regime(self, multipliers: np.ndarray) -> Dict:
+        """Get current regime and its characteristics"""
+        if self.hmm is None:
+            raise ValueError("HMM not fitted.")
+        
+        regimes = self.predict_regimes(multipliers)
+        current_regime = regimes[-1]
+        
+        # Get transition matrix if available
+        if hasattr(self.hmm, 'transmat_'):
+            transition_matrix = self.hmm.transmat_
+        else:
+            transition_matrix = np.ones((self.n_regimes, self.n_regimes)) / self.n_regimes
+        
+        # Probability of staying in current regime
+        if transition_matrix is not None:
+            stay_probability = transition_matrix[current_regime, current_regime]
+        else:
+            stay_probability = 0.5
+        
+        return {
+            'regime_id': int(current_regime),
+            'regime_name': self.regime_names.get(current_regime, f'regime_{current_regime}'),
+            'stay_probability': float(stay_probability),
+            'transition_matrix': [[float(x) for x in row] for row in transition_matrix.tolist()] if transition_matrix is not None else None
+        }
+    
+    def get_regime_statistics(self, multipliers: np.ndarray) -> List[Dict]:
+        """Get statistics for each regime"""
+        if self.hmm is None:
+            raise ValueError("HMM not fitted.")
+        
+        regimes = self.predict_regimes(multipliers)
+        regime_stats = []
+        
+        for regime_id in range(self.n_regimes):
+            regime_mask = regimes == regime_id
+            regime_data = multipliers[regime_mask]
+            
+            if len(regime_data) > 0:
+                stats = {
+                    'regime_id': int(regime_id),
+                    'regime_name': self.regime_names.get(regime_id, f'regime_{regime_id}'),
+                    'count': int(len(regime_data)),
+                    'proportion': float(len(regime_data) / len(multipliers)),
+                    'mean_multiplier': float(np.mean(regime_data)),
+                    'std_multiplier': float(np.std(regime_data)),
+                    'min_multiplier': float(np.min(regime_data)),
+                    'max_multiplier': float(np.max(regime_data))
+                }
+            else:
+                stats = {
+                    'regime_id': int(regime_id),
+                    'regime_name': self.regime_names.get(regime_id, f'regime_{regime_id}'),
+                    'count': 0,
+                    'proportion': 0.0,
+                    'mean_multiplier': 0.0,
+                    'std_multiplier': 0.0,
+                    'min_multiplier': 0.0,
+                    'max_multiplier': 0.0
+                }
+            
+            regime_stats.append(stats)
+        
+        return regime_stats
+    
+    def detect_regime_transition(self, multipliers: np.ndarray, threshold: int = 5) -> bool:
+        """
+        Detect if there's been a recent regime transition.
+        
+        Args:
+            threshold: Number of consecutive observations needed to confirm transition
+        """
+        if self.hmm is None:
+            return False
+        
+        regimes = self.predict_regimes(multipliers)
+        
+        if len(regimes) < threshold + 1:
+            return False
+        
+        # Check if last 'threshold' observations are different from previous regime
+        recent_regime = regimes[-1]
+        previous_regime = regimes[-threshold-1]
+        
+        if recent_regime != previous_regime:
+            # Confirm that all recent observations are in the new regime
+            recent_regimes = regimes[-threshold:]
+            return all(r == recent_regime for r in recent_regimes)
+        
+        return False
+
+
+class EnsemblePredictor:
+    """
+    Ensemble predictor combining multiple models for robustness.
+    
+    Uses weighted averaging based on model performance and confidence scores.
+    """
+    
+    def __init__(self):
+        self.pareto_model = ParetoDistribution()
+        self.exp_model = ExponentialCrashModel()
+        self.gmm_analyzer = GaussianMixtureClusterAnalyzer(n_components=3)
+        self.markov_analyzer = MarkovChainStreakAnalyzer()
+        
+        # Model weights (can be updated based on performance)
+        self.weights = {
+            'pareto': 0.3,
+            'exponential': 0.2,
+            'gmm': 0.3,
+            'markov': 0.2
+        }
+        
+        # Model performance history
+        self.performance_history = {
+            'pareto': [],
+            'exponential': [],
+            'gmm': [],
+            'markov': []
+        }
+    
+    def predict_multiplier_probability(self, multipliers: np.ndarray, threshold: float) -> Dict:
+        """
+        Ensemble prediction of probability of exceeding threshold.
+        
+        Combines predictions from multiple models with confidence-weighted averaging.
+        """
+        if len(multipliers) < 10:
+            return {'probability': 0.5, 'confidence': 0.1, 'model_weights': self.weights}
+        
+        # Pareto model prediction
+        try:
+            xm_hat, alpha_hat = self.pareto_model.fit_mle(multipliers)
+            pareto_prob = self.pareto_model.survival_function(np.array([threshold]))[0]
+            pareto_confidence = max(0, min(1, -np.log(1 - pareto_prob) if pareto_prob < 1 else 0))
+        except:
+            pareto_prob = 0.5
+            pareto_confidence = 0.1
+        
+        # Exponential model prediction
+        try:
+            lambda_hat = self.exp_model.fit_mle(multipliers)
+            exp_prob = self.exp_model.survival_function(np.array([threshold]))[0]
+            exp_confidence = max(0, min(1, lambda_hat / 5))
+        except:
+            exp_prob = 0.5
+            exp_confidence = 0.1
+        
+        # GMM-based prediction
+        try:
+            self.gmm_analyzer.fit(multipliers)
+            clusters = self.gmm_analyzer.get_cluster_stats()
+            # Probability from cluster with mean closest to threshold
+            cluster_means = [c['mean_multiplier'] for c in clusters]
+            if cluster_means:
+                closest_cluster = clusters[np.argmin([abs(m - threshold) for m in cluster_means])]
+                gmm_prob = closest_cluster['probability_mass']
+                gmm_confidence = max(0, min(1, gmm_prob))
+            else:
+                gmm_prob = 0.5
+                gmm_confidence = 0.1
+        except:
+            gmm_prob = 0.5
+            gmm_confidence = 0.1
+        
+        # Markov chain prediction
+        try:
+            transition_matrix = self.markov_analyzer.build_transition_matrix(multipliers)
+            wins = multipliers >= threshold
+            if len(wins) > 0:
+                current_state = wins[-1]
+                if current_state:
+                    markov_prob = transition_matrix[0, 0]  # Probability of staying in win state
+                else:
+                    markov_prob = transition_matrix[1, 0]  # Probability of switching to win state
+                markov_confidence = max(0, min(1, 1 - abs(transition_matrix[0, 0] - 0.5) * 2))
+            else:
+                markov_prob = 0.5
+                markov_confidence = 0.1
+        except:
+            markov_prob = 0.5
+            markov_confidence = 0.1
+        
+        # Confidence-weighted ensemble
+        predictions = {
+            'pareto': pareto_prob,
+            'exponential': exp_prob,
+            'gmm': gmm_prob,
+            'markov': markov_prob
+        }
+        
+        confidences = {
+            'pareto': pareto_confidence,
+            'exponential': exp_confidence,
+            'gmm': gmm_confidence,
+            'markov': markov_confidence
+        }
+        
+        # Adjust weights based on confidence
+        total_confidence = sum(confidences.values())
+        if total_confidence > 0:
+            adjusted_weights = {
+                model: self.weights[model] * confidences[model] / total_confidence
+                for model in self.weights
+            }
+            # Normalize
+            total_weight = sum(adjusted_weights.values())
+            adjusted_weights = {k: v / total_weight for k, v in adjusted_weights.items()}
+        else:
+            adjusted_weights = self.weights
+        
+        # Weighted average
+        ensemble_prob = sum(predictions[model] * adjusted_weights[model] for model in predictions)
+        
+        # Overall confidence (average of individual confidences)
+        overall_confidence = sum(confidences.values()) / len(confidences)
+        
+        return {
+            'probability': ensemble_prob,
+            'confidence': overall_confidence,
+            'model_weights': adjusted_weights,
+            'individual_predictions': predictions,
+            'individual_confidences': confidences
+        }
+    
+    def update_weights(self, performance_scores: Dict[str, float]):
+        """
+        Update model weights based on recent performance.
+        
+        Args:
+            performance_scores: Dictionary of model performance scores (0-1)
+        """
+        for model, score in performance_scores.items():
+            if model in self.performance_history:
+                self.performance_history[model].append(score)
+                # Keep only recent history
+                if len(self.performance_history[model]) > 100:
+                    self.performance_history[model] = self.performance_history[model][-50:]
+        
+        # Update weights based on average performance
+        for model in self.weights:
+            if model in self.performance_history and len(self.performance_history[model]) > 0:
+                avg_performance = np.mean(self.performance_history[model])
+                # Weighted update (move weight toward performance)
+                self.weights[model] = 0.7 * self.weights[model] + 0.3 * avg_performance
+        
+        # Normalize weights
+        total_weight = sum(self.weights.values())
+        if total_weight > 0:
+            self.weights = {k: v / total_weight for k, v in self.weights.items()}
+    
+    def get_model_disagreement(self, multipliers: np.ndarray, threshold: float) -> float:
+        """
+        Measure disagreement between models using variance of predictions.
+        
+        Returns 0-1 score where 0 = perfect agreement, 1 = maximum disagreement.
+        """
+        ensemble_result = self.predict_multiplier_probability(multipliers, threshold)
+        predictions = ensemble_result['individual_predictions']
+        
+        if len(predictions) < 2:
+            return 0.0
+        
+        prediction_values = list(predictions.values())
+        variance = np.var(prediction_values)
+        
+        # Normalize variance (max theoretical variance is 0.25 for probabilities in [0,1])
+        normalized_variance = variance / 0.25
+        
+        return min(1.0, normalized_variance)
+
+
+class AdaptiveParameterEstimator:
+    """
+    Implements adaptive parameter estimation for time-varying conditions.
+    
+    Uses exponential smoothing and rolling window estimation to adapt to
+    changing statistical properties over time.
+    """
+    
+    def __init__(self, window_size: int = 100, smoothing_factor: float = 0.1):
+        self.window_size = window_size
+        self.smoothing_factor = smoothing_factor
+        self.parameter_history = {
+            'pareto_alpha': [],
+            'pareto_xm': [],
+            'markov_transition': [],
+            'mean_multiplier': [],
+            'volatility': []
+        }
+        
+    def estimate_pareto_adaptive(self, multipliers: np.ndarray) -> Tuple[float, float]:
+        """
+        Adaptive Pareto parameter estimation using rolling window.
+        
+        Returns smoothed (alpha, x_m) parameters.
+        """
+        if len(multipliers) < 10:
+            return 2.0, 1.0  # Default values
+        
+        # Use recent window
+        window_data = multipliers[-self.window_size:] if len(multipliers) > self.window_size else multipliers
+        
+        # Current MLE estimates
+        pareto = ParetoDistribution()
+        xm_hat, alpha_hat = pareto.fit_mle(window_data)
+        
+        # Exponential smoothing of parameters
+        if len(self.parameter_history['pareto_alpha']) > 0:
+            alpha_smooth = (self.smoothing_factor * alpha_hat + 
+                           (1 - self.smoothing_factor) * self.parameter_history['pareto_alpha'][-1])
+            xm_smooth = (self.smoothing_factor * xm_hat + 
+                         (1 - self.smoothing_factor) * self.parameter_history['pareto_xm'][-1])
+        else:
+            alpha_smooth = alpha_hat
+            xm_smooth = xm_hat
+        
+        # Store history
+        self.parameter_history['pareto_alpha'].append(alpha_smooth)
+        self.parameter_history['pareto_xm'].append(xm_smooth)
+        
+        # Keep history manageable
+        if len(self.parameter_history['pareto_alpha']) > 1000:
+            self.parameter_history['pareto_alpha'] = self.parameter_history['pareto_alpha'][-500:]
+            self.parameter_history['pareto_xm'] = self.parameter_history['pareto_xm'][-500:]
+        
+        return alpha_smooth, xm_smooth
+    
+    def estimate_markov_adaptive(self, multipliers: np.ndarray) -> np.ndarray:
+        """
+        Adaptive Markov transition matrix estimation.
+        
+        Returns smoothed 2x2 transition matrix.
+        """
+        if len(multipliers) < 20:
+            return np.array([[0.5, 0.5], [0.5, 0.5]])
+        
+        # Recent window transition matrix
+        window_data = multipliers[-self.window_size:] if len(multipliers) > self.window_size else multipliers
+        analyzer = MarkovChainStreakAnalyzer()
+        current_matrix = analyzer.build_transition_matrix(window_data)
+        
+        # Exponential smoothing of transition matrix
+        if len(self.parameter_history['markov_transition']) > 0:
+            last_matrix = self.parameter_history['markov_transition'][-1]
+            smoothed_matrix = (self.smoothing_factor * current_matrix + 
+                              (1 - self.smoothing_factor) * last_matrix)
+        else:
+            smoothed_matrix = current_matrix
+        
+        # Store history
+        self.parameter_history['markov_transition'].append(smoothed_matrix)
+        
+        # Keep history manageable
+        if len(self.parameter_history['markov_transition']) > 1000:
+            self.parameter_history['markov_transition'] = self.parameter_history['markov_transition'][-500:]
+        
+        return smoothed_matrix
+    
+    def estimate_volatility_adaptive(self, multipliers: np.ndarray) -> float:
+        """
+        Adaptive volatility estimation using rolling window.
+        
+        Returns smoothed volatility (standard deviation).
+        """
+        if len(multipliers) < 10:
+            return np.std(multipliers) if len(multipliers) > 0 else 1.0
+        
+        # Recent window
+        window_data = multipliers[-self.window_size:] if len(multipliers) > self.window_size else multipliers
+        current_vol = np.std(window_data)
+        
+        # Exponential smoothing
+        if len(self.parameter_history['volatility']) > 0:
+            smoothed_vol = (self.smoothing_factor * current_vol + 
+                           (1 - self.smoothing_factor) * self.parameter_history['volatility'][-1])
+        else:
+            smoothed_vol = current_vol
+        
+        # Store history
+        self.parameter_history['volatility'].append(smoothed_vol)
+        
+        # Keep history manageable
+        if len(self.parameter_history['volatility']) > 1000:
+            self.parameter_history['volatility'] = self.parameter_history['volatility'][-500:]
+        
+        return smoothed_vol
+    
+    def detect_regime_change(self, multipliers: np.ndarray, threshold: float = 2.0) -> bool:
+        """
+        Detect if there's been a significant regime change.
+        
+        Uses statistical process control on parameter estimates.
+        """
+        if len(self.parameter_history['pareto_alpha']) < 10:
+            return False
+        
+        recent_alphas = self.parameter_history['pareto_alpha'][-10:]
+        alpha_mean = np.mean(recent_alphas)
+        alpha_std = np.std(recent_alphas)
+        
+        if alpha_std > 0:
+            z_score = abs(self.parameter_history['pareto_alpha'][-1] - alpha_mean) / alpha_std
+            return z_score > threshold
+        
+        return False
+    
+    def get_parameter_stability_score(self) -> float:
+        """
+        Calculate stability score based on parameter variance.
+        
+        Returns 0-1 score where 1 = stable, 0 = unstable.
+        """
+        if len(self.parameter_history['pareto_alpha']) < 20:
+            return 0.5
+        
+        recent_alphas = self.parameter_history['pareto_alpha'][-20:]
+        alpha_cv = np.std(recent_alphas) / (np.mean(recent_alphas) + 1e-6)
+        
+        # Convert CV to stability score (lower CV = higher stability)
+        stability = 1 / (1 + alpha_cv * 10)
+        return max(0, min(1, stability))
+
+
 class ParetoDistribution:
     """
     Implements Pareto Type I and II distributions for crash modeling.

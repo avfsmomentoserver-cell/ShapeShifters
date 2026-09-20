@@ -1,0 +1,46 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Exec(git)",
+      "Exec(node)",
+      "Exec(npm)",
+      "Exec(python3)",
+      "Exec(pip3)",
+      "Exec(ls)",
+      "Exec(cat)",
+      "Exec(mkdir)",
+      "Exec(cd)",
+      "Exec(curl)",
+      "Exec(echo)",
+      "Exec(rm)",
+      "Exec(mv)",
+      "Exec(touch)"
+    ],
+    "deny": [
+      "Exec(sudo)",
+      "Exec(rm -rf)",
+      "Exec(rm -rf *)"
+    ]
+  },
+  "environment": {
+    "NODE_VERSION": "20",
+    "PYTHON_VERSION": "3.8+",
+    "WATCH_DIR": "/home/admin/Downloads",
+    "PYTHON_BACKEND_URL": "http://localhost:8000"
+  },
+  "project_info": {
+    "name": "ShapeShifters",
+    "description": "Crash curve analytics platform with mathematical models",
+    "version": "2.0",
+    "branch": "implementing-solutions-7421f",
+    "features": [
+      "adaptive_parameter_estimation",
+      "ensemble_prediction",
+      "hmm_regime_detection",
+      "bayesian_eta_estimation",
+      "markov_streak_analysis",
+      "gmm_clustering"
+    ]
+  }
+}
