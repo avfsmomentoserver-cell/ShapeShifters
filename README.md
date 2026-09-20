@@ -112,17 +112,39 @@ Place JSON crash data files in `~/Downloads` with format:
 
 ## Mathematical Models
 
+### Adaptive Parameter Estimation
+- **Purpose**: Handle time-varying statistical properties
+- **Methods**: Exponential smoothing, rolling window estimation
+- **Features**: Regime change detection, parameter stability scoring
+- **Window Size**: 100 rounds (configurable)
+- **Smoothing Factor**: 0.1 (configurable)
+
+### Ensemble Prediction
+- **Purpose**: Combine multiple models for robustness
+- **Models**: Pareto, Exponential, GMM, Markov Chain
+- **Method**: Confidence-weighted averaging
+- **Features**: Dynamic weight updating, model disagreement measurement
+- **Applications**: Moonshot probability, moderate win probability
+
+### Hidden Markov Models
+- **Purpose**: Detect statistical regimes (volatility patterns)
+- **Regimes**: Low, moderate, high volatility
+- **Method**: Gaussian HMM with fallback threshold detection
+- **Features**: Regime transition detection, per-regime statistics
+
 ### Pareto Distribution
 Models heavy-tailed crash multiplier distributions:
 - Formula: `P(X > x) = (x_m / x)^α`
 - Parameters: x_m (minimum), α (tail index)
 - MLE estimation with KS goodness-of-fit testing
+- **Now**: Adaptive parameter estimation with smoothing
 
 ### Markov Chain Streak Analyzer
 Analyzes win/loss sequences:
 - States: win (≥2x), loss (<2x)
 - Transition matrix: P = [[P(W|W), P(L|W)], [P(W|L), P(L|L)]]
 - Expected duration via geometric distribution
+- **Now**: Adaptive transition matrix estimation
 
 ### Gaussian Mixture Models
 Identifies clusters in multiplier space:
@@ -144,14 +166,15 @@ Real-time crash point estimation:
 - `POST /api/rounds` - Add new rounds
 
 ### Prediction API (Port 8000)
-- `GET /analyze` - Full comprehensive analysis
+- `GET /analyze` - Full comprehensive analysis with ensemble predictions
 - `GET /analyze/quick` - Quick analysis
 - `POST /analyze/live` - Live round ETA
 - `GET /components/curve-shape` - Curve classification
-- `GET /components/streaks` - Streak analysis
+- `GET /components/streaks` - Adaptive streak analysis
 - `GET /components/dry-zone` - Dry zone prediction
 - `GET /components/moonshot` - Moonshot forecast
 - `GET /components/eta` - ETA estimation
+- `GET /components/regime` - HMM regime detection
 - `GET /data/rounds` - Historical rounds
 - `GET /data/stats` - Aggregate statistics
 

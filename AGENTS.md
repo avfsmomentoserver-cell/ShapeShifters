@@ -32,7 +32,10 @@ This is a crash curve analytics platform with Node.js file watcher, Python predi
 
 ## Prediction Backend (Python)
 - Python 3.8+ required
-- Mathematical models for curve analysis, streaks, dry zones, moonshots
+- Mathematical models: Pareto, Exponential, Markov Chains, GMM, Bayesian ETA
+- **NEW**: Adaptive parameter estimation with exponential smoothing
+- **NEW**: Ensemble predictor combining multiple models
+- **NEW**: Hidden Markov Models for regime detection
 - API endpoints: `/analyze`, `/components/*`, `/data/*`
 - SQLite database for round storage and analysis
 - Install deps: `pip install -r requirements.txt`
@@ -61,8 +64,16 @@ This is a crash curve analytics platform with Node.js file watcher, Python predi
 ## Key Files
 - `README.md` - Project documentation
 - `AGENTS.md` - This file (agent configuration)
-- `PREDICTION_PIPELINE_ANALYSIS.md` - Mathematical model analysis
+- `PREDICTION_PIPELINE_ANALYSIS.md` - Mathematical model analysis (updated v2.0)
 - `.devin/config.json` - Devin CLI configuration
 - `server/live-db.mjs` - Data watcher implementation
-- `backend/src/lib/math_models.py` - Mathematical models
+- `backend/src/lib/math_models.py` - Mathematical models (updated with adaptive/ensemble/HMM)
+- `backend/src/analyzer.py` - Main analysis engine (updated with new features)
 - `frontend/src/components/Dashboard.jsx` - Main dashboard component
+
+## Recent Improvements (v2.0)
+- Adaptive parameter estimation for time-varying conditions
+- Ensemble methods combining Pareto, Exponential, GMM, and Markov models
+- Hidden Markov Models for regime detection (low/moderate/high volatility)
+- Enhanced uncertainty quantification with model disagreement measurement
+- Confidence-weighted ensemble predictions for moonshot and moderate win probabilities
