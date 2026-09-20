@@ -50,7 +50,7 @@ export default function MoonshotForecaster({ data, fullView = false }) {
   const predictNextMoonshot = () => {
     const recentData = data.slice(-30)
     const highMultipliers = recentData.filter(r => r.multiplier >= 3).length
-    const building Momentum = highMultipliers / recentData.length
+    const buildingMomentum = highMultipliers / recentData.length
     
     const avgGapBetweenMoonshots = data.length / Math.max(1, data.filter(r => r.multiplier >= 5).length)
     

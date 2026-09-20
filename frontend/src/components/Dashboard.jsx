@@ -14,50 +14,39 @@ export default function Dashboard({ connectionStatus }) {
   const [currentMultiplier, setCurrentMultiplier] = useState(1.00)
   const [selectedShape, setSelectedShape] = useState(null)
 
-  // Simulate real-time data updates
+  // Fetch real data from watcher API
+  const fetchRounds = async () => {
+    try {
+      const response = await fetch('/api/rounds')
+      if (response.ok) {
+        const data = await response.json()
+        const processedRounds = data.rounds.map((round, index) => ({
+          id: index,
+          timestamp: round.timestamp,
+          time: new Date(round.timestamp).toLocaleTimeString(),
+          multiplier: round.multiplier,
+          shape: classifyShape(round.multiplier),
+          confidence: 0.7 + Math.random() * 0.25
+        }))
+        setRoundData(processedRounds)
+        if (processedRounds.length > 0) {
+          setCurrentMultiplier(processedRounds[processedRounds.length - 1].multiplier)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch rounds:', error)
+    }
+  }
+
+  // Real-time data updates from watcher
   useEffect(() => {
     if (!isAutoRefresh || connectionStatus !== 'connected') return
 
-    const generateInitialData = () => {
-      const data = []
-      const now = Date.now()
-      for (let i = 50; i >= 0; i--) {
-        const timestamp = now - i * 5000
-        const multiplier = 1 + Math.random() * 3
-        data.push({
-          id: i,
-          timestamp: new Date(timestamp).toISOString(),
-          time: new Date(timestamp).toLocaleTimeString(),
-          multiplier: parseFloat(multiplier.toFixed(2)),
-          shape: classifyShape(multiplier),
-          confidence: 0.7 + Math.random() * 0.25
-        })
-      }
-      return data
-    }
+    // Initial fetch
+    fetchRounds()
 
-    setRoundData(generateInitialData())
-
-    const interval = setInterval(() => {
-      setCurrentMultiplier(prev => {
-        const newValue = prev + 0.01 + Math.random() * 0.05
-        return newValue > 10 ? 1.00 : parseFloat(newValue.toFixed(2))
-      })
-
-      setRoundData(prev => {
-        const newData = [...prev.slice(1)]
-        const newPoint = {
-          id: Date.now(),
-          timestamp: new Date().toISOString(),
-          time: new Date().toLocaleTimeString(),
-          multiplier: parseFloat((1 + Math.random() * 5).toFixed(2)),
-          shape: classifyShape(parseFloat((1 + Math.random() * 5).toFixed(2))),
-          confidence: 0.7 + Math.random() * 0.25
-        }
-        newData.push(newPoint)
-        return newData
-      })
-    }, 3000)
+    // Poll for new data every 2 seconds
+    const interval = setInterval(fetchRounds, 2000)
 
     return () => clearInterval(interval)
   }, [isAutoRefresh, connectionStatus])

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Exec(git)",
+      "Exec(node)",
+      "Exec(npm)",
+      "Exec(python3)",
+      "Exec(pip3)",
+      "Exec(ls)",
+      "Exec(cat)",
+      "Exec(mkdir)",
+      "Exec(cd)",
+      "Exec(curl)",
+      "Exec(echo)"
+    ],
+    "deny": [
+      "Exec(sudo)",
+      "Exec(rm -rf)",
+      "Exec(rm -rf *)"
+    ]
+  }
+}

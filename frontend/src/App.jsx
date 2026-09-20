@@ -7,13 +7,25 @@ function App() {
   const [lastUpdate, setLastUpdate] = useState(null)
 
   useEffect(() => {
-    // Simulate connection check
-    const timer = setTimeout(() => {
-      setConnectionStatus('connected')
-      setLastUpdate(new Date())
-    }, 1000)
+    // Check connection to watcher API
+    const checkConnection = async () => {
+      try {
+        const response = await fetch('/api/health')
+        if (response.ok) {
+          setConnectionStatus('connected')
+          setLastUpdate(new Date())
+        } else {
+          setConnectionStatus('connecting')
+        }
+      } catch (error) {
+        setConnectionStatus('connecting')
+      }
+    }
 
-    return () => clearTimeout(timer)
+    checkConnection()
+    const interval = setInterval(checkConnection, 5000)
+
+    return () => clearInterval(interval)
   }, [])
 
   return (
