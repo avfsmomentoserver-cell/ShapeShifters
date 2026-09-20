@@ -9,7 +9,6 @@ const WATCH_DIR = process.env.MOMENTO_WATCH_DIR ?? "/home/admin/Downloads";
 const DATA_DIR = process.env.MOMENTO_DATA_DIR ?? path.resolve("data");
 const DB_FILE = path.join(DATA_DIR, "rounds.json");
 const MAX_ROUNDS = 5000;
-const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL ?? "http://localhost:8000";
 let writeQueue = Promise.resolve();
 
 async function readDb() {
@@ -45,36 +44,6 @@ function parsePayload(text) {
     .filter((round) => Number.isFinite(round.multiplier) && round.multiplier > 0 && !Number.isNaN(Date.parse(round.timestamp)));
 }
 
-async function sendToPythonBackend(rounds) {
-  try {
-    // Send individual rounds to Python backend database
-    for (const round of rounds) {
-      const response = await fetch(`${PYTHON_BACKEND_URL}/data/round`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          timestamp: new Date(round.timestamp).getTime() / 1000,
-          multiplier: round.multiplier,
-          hash: `hash_${round.timestamp}_${round.multiplier}`,
-          server_seed: "",
-          client_seed: "",
-          nonce: 0
-        })
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        console.log(`[live-db] sent round to Python backend: ${result.round_id}`);
-      } else {
-        console.error(`[live-db] failed to send round to Python backend: ${response.status}`);
-      }
-    }
-    console.log(`[live-db] sent ${rounds.length} rounds to Python backend`);
-  } catch (error) {
-    console.error(`[live-db] Python backend error: ${error.message}`);
-  }
-}
-
 async function ingestFile(filePath) {
   if (!filePath.endsWith(".json")) return 0;
   try {
@@ -90,9 +59,8 @@ async function ingestFile(filePath) {
     if (added.length > 0) {
       db.rounds = [...db.rounds, ...added].sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-MAX_ROUNDS);
       await persistDb(db);
-      
-      // Send new rounds to Python backend for analysis
-      await sendToPythonBackend(added);
+      // NOTE: Python backend now fetches data directly from watcher API
+      // No need to send rounds to Python backend
     }
     await unlink(filePath);
     console.log(`[live-db] ingested ${path.basename(filePath)}: ${added.length} new rounds`);
@@ -115,6 +83,7 @@ function sendJson(response, status, body) {
 
 async function proxyToPythonBackend(request, response) {
   try {
+    const PYTHON_BACKEND_URL = "http://localhost:8000"; // Python backend for analysis only
     const url = new URL(request.url, `http://${request.headers.host}`);
     const targetUrl = `${PYTHON_BACKEND_URL}${url.pathname}${url.search}`;
     
@@ -160,7 +129,7 @@ const server = createServer(async (request, response) => {
   }
   
   if (request.url === "/api/health" && request.method === "GET") {
-    return sendJson(response, 200, { ok: true, database: DB_FILE, watchDir: WATCH_DIR, pythonBackend: PYTHON_BACKEND_URL });
+    return sendJson(response, 200, { ok: true, database: DB_FILE, watchDir: WATCH_DIR, dataSource: "watcher_api_only" });
   }
   if (request.url === "/api/rounds" && request.method === "GET") {
     const db = await readDb();

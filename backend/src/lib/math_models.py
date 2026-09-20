@@ -180,7 +180,7 @@ class HiddenMarkovRegimeDetector:
             'regime_id': int(current_regime),
             'regime_name': self.regime_names.get(current_regime, f'regime_{current_regime}'),
             'stay_probability': float(stay_probability),
-            'transition_matrix': transition_matrix.tolist() if transition_matrix is not None else None
+            'transition_matrix': [[float(x) for x in row] for row in transition_matrix.tolist()] if transition_matrix is not None else None
         }
     
     def get_regime_statistics(self, multipliers: np.ndarray) -> List[Dict]:

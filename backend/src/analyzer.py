@@ -5,9 +5,13 @@ dry zone prediction, moonshot forecasting, and ETA estimation.
 """
 
 import numpy as np
+import requests
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 import time
+
+# Watcher API configuration - single source of truth for round data
+WATCHER_API_URL = "http://localhost:8787"
 
 from src.lib.math_models import (
     ParetoDistribution, ExponentialCrashModel, MarkovChainStreakAnalyzer,
@@ -16,6 +20,24 @@ from src.lib.math_models import (
     AdaptiveParameterEstimator, EnsemblePredictor, HiddenMarkovRegimeDetector
 )
 from src.db.database import DatabaseConnector, Round
+
+
+def convert_numpy_types(obj):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.ndarray):
+        return convert_numpy_types(obj.tolist())
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    else:
+        return obj
 
 
 @dataclass
@@ -73,7 +95,19 @@ class CrashAnalyzer:
         self._cache_validity_seconds: float = 5.0
     
     def get_multipliers(self, limit: int = 1000) -> np.ndarray:
-        """Fetch multipliers from database"""
+        """Fetch multipliers from watcher API (~/Downloads rounds only)"""
+        try:
+            response = requests.get("http://localhost:8787/api/rounds")
+            if response.status_code == 200:
+                data = response.json()
+                multipliers = [round['multiplier'] for round in data.get('rounds', [])]
+                if limit:
+                    multipliers = multipliers[-limit:]
+                return np.array(multipliers)
+        except Exception as e:
+            print(f"Error fetching from watcher API: {e}")
+        
+        # Fallback to database
         return self.db.get_all_multipliers(limit=limit)
     
     def analyze(self, multipliers: Optional[np.ndarray] = None, 
@@ -93,7 +127,7 @@ class CrashAnalyzer:
         if (self._last_analysis is not None and 
             not force_refresh and 
             current_time - self._cache_timestamp < self._cache_validity_seconds):
-            return self._last_analysis
+            return convert_numpy_types(asdict(self._last_analysis))
         
         # Get data if not provided
         if multipliers is None:
@@ -138,11 +172,11 @@ class CrashAnalyzer:
             dry_zone_prediction=dry_zone,
             moonshot_forecast=moonshot,
             eta_estimate=None,  # Set separately during live rounds
-            regime_change_detected=regime_change_detected,
-            stability_score=stability_score,
+            regime_change_detected=bool(regime_change_detected),
+            stability_score=float(stability_score),
             ensemble_predictions=ensemble_result,
             hmm_regime_info=hmm_regime_info,
-            regime_transition=regime_transition,
+            regime_transition=bool(regime_transition),
             regime_statistics=regime_stats
         )
         
@@ -225,9 +259,9 @@ class CrashAnalyzer:
             'expected_duration': float(result.expected_duration) if result.expected_duration != float('inf') else None,
             'probability_continuation': float(result.probability_continuation),
             'historical_max_streak': int(result.historical_max_streak),
-            'transition_matrix': adaptive_matrix.tolist(),
+            'transition_matrix': [[float(x) for x in row] for row in adaptive_matrix.tolist()],
             'adaptive': True,
-            'stability_score': self.adaptive_estimator.get_parameter_stability_score()
+            'stability_score': float(self.adaptive_estimator.get_parameter_stability_score())
         }
     
     def _analyze_curve_shape(self, multipliers: np.ndarray) -> Dict:
@@ -286,9 +320,9 @@ class CrashAnalyzer:
             'expected_duration': float(result.expected_duration) if result.expected_duration != float('inf') else None,
             'probability_continuation': float(result.probability_continuation),
             'historical_max_streak': int(result.historical_max_streak),
-            'transition_matrix': adaptive_matrix.tolist(),
+            'transition_matrix': [[float(x) for x in row] for row in adaptive_matrix.tolist()],
             'adaptive': True,
-            'stability_score': self.adaptive_estimator.get_parameter_stability_score()
+            'stability_score': float(self.adaptive_estimator.get_parameter_stability_score())
         }
     
     def _generate_ensemble_predictions(self, multipliers: np.ndarray) -> Dict:
