@@ -1,232 +1,118 @@
-# ShapeShifters - Crash Curve Analytics Platform
+# Momento — crash-curve analytics terminal
 
-A comprehensive mathematical analysis platform for crash game prediction using stochastic models, statistical analysis, and machine learning techniques.
+A full-stack analytics terminal for crash-curve games (Aviator, Stake Crash, Bustabit,
+JetX, Spaceman). FastAPI + SQLite backend, React + Vite + Tailwind frontend.
 
-## Overview
+**What this is:** measurement. It verifies provably-fair rounds, tests a tape for
+independence, calibrates survival probabilities, scores its own forecasts honestly, and
+computes the real expected value of every bet. **What it is not:** a betting signal. A
+correctly implemented crash game is unpredictable and every stake carries negative
+expected value.
 
-ShapeShifters provides real-time analysis of crash game data with mathematical rigor:
-- **Curve Shape Analysis**: Classifies crash patterns using statistical fitting
-- **Streak Detection**: Markov chain-based win/loss sequence analysis  
-- **Dry Zone Prediction**: GMM clustering for low multiplier periods
-- **Moonshot Forecasting**: Extreme value theory for high multiplier events
-- **ETA Estimation**: Bayesian real-time crash point estimation
+---
 
-## Architecture
+## Run it
 
-### Data Flow
-1. **Ingestion**: JSON files appear in `~/Downloads` from external data collection
-2. **Watcher**: Node.js server processes files and stores in local JSON database
-3. **Backend**: Python FastAPI server performs mathematical analysis
-4. **Frontend**: React dashboard displays real-time predictions and visualizations
+Two processes. Backend first.
 
-### Components
-
-#### Data Watcher (Node.js)
-- **Port**: 8787
-- **File**: `server/live-db.mjs`
-- **Watch Directory**: `~/Downloads`
-- **API Endpoints**: `/api/health`, `/api/rounds`
-- **Storage**: `data/rounds.json` (max 5000 rounds)
-
-#### Prediction Backend (Python)
-- **Port**: 8000
-- **Framework**: FastAPI
-- **Database**: SQLite (`momento.db`)
-- **Mathematical Models**: Pareto, Exponential, Markov Chains, GMM, Bayesian ETA
-- **API Endpoints**: `/analyze`, `/components/*`, `/data/*`
-
-#### Frontend Dashboard (React)
-- **Port**: 3000
-- **Framework**: React + Vite + TailwindCSS
-- **Visualization**: Recharts
-- **Update Frequency**: 2-second polling
-- **Components**: Dashboard, Curve Shapes, Streaks, Dry Zones, Moonshots, ETA
-
-## Installation
-
-### Prerequisites
-- Node.js 20.x (use nvm)
-- Python 3.8+
-- npm
-
-### Setup
+### Backend (Python 3.11+)
 
 ```bash
-# Clone repository
-git clone https://github.com/avfsmomentoserver-cell/ShapeShifters.git
-cd ShapeShifters
+cd backend
+python -m venv .venv && source .venv/bin/activate    # optional
+pip install -r requirements.txt
+python -m uvicorn momento.api:app --host 0.0.0.0 --port 8000
+```
 
-# Install Node.js if needed
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-export NVM_DIR="$HOME/.config/nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-nvm install 20
+API docs at `http://localhost:8000/docs`. State lives in `backend/momento.db`
+(SQLite, WAL mode). Delete `momento.db*` to wipe everything and reseed the demo tape.
 
-# Install Python dependencies
-sudo apt install python3-fastapi python3-uvicorn python3-numpy python3-scipy python3-sklearn python3-pydantic python3-pytest
+### Frontend (Node 20+)
 
-# Install frontend dependencies
-cd frontend
+```bash
 npm install
-cd ..
+npm run dev        # http://localhost:5173
 ```
 
-## Development
+`frontend/lib/api.ts` resolves the API base from the `__PORT_8000__` build placeholder
+and falls back to `http://localhost:8000` during local development, so `npm run dev`
+works with no configuration.
 
-### Start All Services
+Production build:
 
 ```bash
-# Terminal 1: Start Python backend
-cd backend
-python3 -m uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
-
-# Terminal 2: Start data watcher
-export NVM_DIR="$HOME/.config/nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-MOMENTO_WATCH_DIR="$HOME/Downloads" PYTHON_BACKEND_URL="http://localhost:8000" node server/live-db.mjs
-
-# Terminal 3: Start frontend
-cd frontend
-export NVM_DIR="$HOME/.config/nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-npm run dev
+npm run build      # -> dist/
 ```
 
-### Data Ingestion
+`dist/` is a static bundle. Serve it from anything; it talks to the backend over HTTP
+and (when available) a websocket. `base` is `"./"` so the bundle works from a subpath.
 
-Place JSON crash data files in `~/Downloads` with format:
-```json
-{
-  "source": "aviator",
-  "collectedAt": "2026-09-20T13:40:00.000Z",
-  "rounds": [
-    {
-      "timestamp": "2026-09-20T13:40:00.000Z",
-      "multiplier": 3.5,
-      "color": "rgb(100, 200, 100)",
-      "source": "aviator"
-    }
-  ]
-}
-```
+### Tests
 
-## Mathematical Models
-
-### Adaptive Parameter Estimation
-- **Purpose**: Handle time-varying statistical properties
-- **Methods**: Exponential smoothing, rolling window estimation
-- **Features**: Regime change detection, parameter stability scoring
-- **Window Size**: 100 rounds (configurable)
-- **Smoothing Factor**: 0.1 (configurable)
-
-### Ensemble Prediction
-- **Purpose**: Combine multiple models for robustness
-- **Models**: Pareto, Exponential, GMM, Markov Chain
-- **Method**: Confidence-weighted averaging
-- **Features**: Dynamic weight updating, model disagreement measurement
-- **Applications**: Moonshot probability, moderate win probability
-
-### Hidden Markov Models
-- **Purpose**: Detect statistical regimes (volatility patterns)
-- **Regimes**: Low, moderate, high volatility
-- **Method**: Gaussian HMM with fallback threshold detection
-- **Features**: Regime transition detection, per-regime statistics
-
-### Pareto Distribution
-Models heavy-tailed crash multiplier distributions:
-- Formula: `P(X > x) = (x_m / x)^α`
-- Parameters: x_m (minimum), α (tail index)
-- MLE estimation with KS goodness-of-fit testing
-- **Now**: Adaptive parameter estimation with smoothing
-
-### Markov Chain Streak Analyzer
-Analyzes win/loss sequences:
-- States: win (≥2x), loss (<2x)
-- Transition matrix: P = [[P(W|W), P(L|W)], [P(W|L), P(L|L)]]
-- Expected duration via geometric distribution
-- **Now**: Adaptive transition matrix estimation
-
-### Gaussian Mixture Models
-Identifies clusters in multiplier space:
-- Log-transform for skewness handling
-- EM algorithm for parameter estimation
-- Bootstrap confidence intervals
-
-### Bayesian ETA Estimator
-Real-time crash point estimation:
-- Conjugate Pareto prior/posterior
-- Conditional survival function
-- Hazard rate calculation
-
-## API Documentation
-
-### Watcher API (Port 8787)
-- `GET /api/health` - Health check
-- `GET /api/rounds` - Get all rounds
-- `POST /api/rounds` - Add new rounds
-
-### Prediction API (Port 8000)
-- `GET /analyze` - Full comprehensive analysis with ensemble predictions
-- `GET /analyze/quick` - Quick analysis
-- `POST /analyze/live` - Live round ETA
-- `GET /components/curve-shape` - Curve classification
-- `GET /components/streaks` - Adaptive streak analysis
-- `GET /components/dry-zone` - Dry zone prediction
-- `GET /components/moonshot` - Moonshot forecast
-- `GET /components/eta` - ETA estimation
-- `GET /components/regime` - HMM regime detection
-- `GET /data/rounds` - Historical rounds
-- `GET /data/stats` - Aggregate statistics
-
-## Configuration
-
-### Environment Variables
-- `MOMENTO_WATCH_DIR`: Directory to watch for JSON files (default: `~/Downloads`)
-- `PYTHON_BACKEND_URL`: Python backend URL (default: `http://localhost:8000`)
-- `PORT`: Watcher server port (default: 8787)
-
-### Frontend Configuration
-Update `frontend/vite.config.js` to change proxy targets if needed.
-
-## Testing
-
-### Backend Tests
 ```bash
-cd backend
-pytest tests/ -v
+cd backend && python -m pytest tests -q     # 34 tests
 ```
 
-### Frontend Linter
-```bash
-cd frontend
-npm run lint
+`tests/test_reality_checks.py` checks the crash identities in closed form — the
+HMAC construction, `P(reach m) = (1-h)/m`, `median = 2(1-h)`, `EV = -h`, a Hill tail
+index near 1.0, and that the randomness battery passes a genuinely fair tape while
+rejecting a rigged one.
+
+---
+
+## Layout
+
+```
+backend/momento/
+  api.py          REST surface + /ws/rounds websocket, visitor-scoped
+  db.py           SQLAlchemy models, serializers, session/bet ledger
+  fairness.py     HMAC-SHA256 crash-point reproduction + convention solver
+  randomness.py   chi-square, KS, runs, autocorrelation, conditional
+                  dependence, digit uniformity
+  survival.py     empirical survival curve + Hill tail index
+  ev.py           expected value, Kelly, ruin simulation
+  strategies.py   strategy backtester + parameter grid
+  engines.py      pattern engines (radar, pressure, DNA, ladders)
+  pipeline.py     forecast lock/resolve + Brier scoring
+  math_models.py  shared distribution helpers
+
+frontend/
+  pages/          21 routes
+  components/     AppShell (sidebar menu), kit.tsx (design primitives)
+  lib/api.ts      typed fetch client, visitor header, websocket
+  lib/store.ts    backend-backed app state (no localStorage — blocked in
+                  sandboxed iframes)
+  index.css       phosphor-green terminal design system
 ```
 
-## Branch Strategy
+## The math, and where it comes from
 
-- `main`: Stable production branch
-- `calibrated`: Development branch with watcher integration
-- `implementing-solutions-7421f`: Feature development branch
+Crash point for a provably-fair round:
 
-## Performance
+```
+digest = HMAC_SHA256(server_seed, f"{client_seed}:{nonce}")
+i      = int(digest[:8], 16)
+raw    = (2**32 / (i + 1)) * (1 - house_edge)
+crash  = floor(max(1, raw) * 100) / 100
+```
 
-- **Watcher**: <10ms per file ingestion
-- **Python Analysis**: ~100ms for 1000 rounds
-- **Frontend Polling**: 2-second intervals
-- **Database**: JSON storage (max 5000 rounds)
+Consequences, all of which the app measures against the live tape:
 
-## License
+- `P(reach m) = (1 - h) / m`
+- `EV per unit staked = -h`, at every cash-out target
+- `median crash = 2(1 - h)`
 
-MIT License
+Sources:
 
-## Contributing
+- Provably-fair crash verification — https://provenlyfair.com/blog/verify-provably-fair-crash/
+- Crash game mathematics — https://crashedge.com/guides/crash-gambling-maths/
+- Optimal bet sizing / Kelly with a house edge — https://crashedge.com/strategy/optimal-bet-sizing-crash-games/
+- Bankroll management — https://crashedge.com/strategy/bankroll-management-crash-games/
+- Kelly criterion — https://en.wikipedia.org/wiki/Kelly_criterion
 
-1. Fork the repository
-2. Create feature branch
-3. Commit changes with conventional messages
-4. Push to branch
-5. Open Pull Request
+## Responsible use
 
-## Support
-
-For issues and questions, please open an issue on GitHub.
+Gambling causes real harm. Help is available at
+[BeGambleAware](https://www.begambleaware.org/),
+[Gambling Therapy](https://www.gamblingtherapy.org/) and
+[Gamblers Anonymous](https://www.gamblersanonymous.org/ga/locations).
