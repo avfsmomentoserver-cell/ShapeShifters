@@ -5,8 +5,10 @@
  */
 import {
   mean, stdev, quantile, clamp, markovStreaks, clusterLog, detectRegimes,
-  exponentialFit, exponentialSurvival, paretoFit, paretoSurvival, etaEstimate,
+  exponentialFit, exponentialSurvival, paretoFit, paretoSurvival, hitEta,
+  hillAlpha, calibratedSurvival,
   curveShapeDistribution, type ParetoFit, type ExpFit, type ClusterInfo, type RegimeReport,
+  type HillTail, type HitEta,
 } from "./stats";
 
 export const STATES = ["Collapse", "Shelf", "Normal", "Ignition", "Moonshot"] as const;
@@ -236,15 +238,39 @@ export interface Analysis {
   regimes: RegimeReport;
   pareto: ParetoFit;
   exponential: ExpFit;
-  eta: ReturnType<typeof etaEstimate>;
   ladder: LadderETA;
   dna: DNAReport;
   shapeDist: Record<"exponential" | "power_law" | "logistic", number>;
+  /** Calibrated P(next >= x): empirical bulk + Hill tail, port of survival.py. */
+  survivalAt: (x: number) => number;
+  /** Recalibrated next-round target: median + 25th/90th percentile of the calibrated curve. */
+  target: TargetForecast;
+  /** Full-range next-round forecast: p01..p99 ladder + tight/full/extreme intervals. */
+  forecast: FullForecast;
+  /** Hill tail index over the recent window — a fair tape sits at 1.0. */
+  tailAlpha: number;
+  /** Expected wait to the next hit at each big-hit threshold, recalibrated every round. */
+  hitEtas: Record<"2x" | "5x" | "10x", HitEta>;
 }
+
+export const BIG_HIT_THRESHOLDS = { "2x": 2, "5x": 5, "10x": 10 } as const;
+export type BigHitKey = keyof typeof BIG_HIT_THRESHOLDS;
 
 export function analyze(multipliers: number[]): Analysis {
   const sorted = [...multipliers].sort((a, b) => a - b);
   const states = stateSequence(multipliers);
+  // The ETAs, per-candidate reach probabilities, and the headline target all
+  // come from the calibrated empirical + Hill-tail estimator, not the legacy
+  // exp/pareto blend: on a fair tape the blend claims ~94% for 2x where the
+  // truth is ~48%, and a wait time is just 1/p — a 2x error in p is a 2x
+  // error in every ETA. The legacy engine is retired from Analysis entirely.
+  const window = multipliers.slice(-600);
+  const tail = hillAlpha(window);
+  const survivalAt = (x: number) => calibratedSurvival(window, x, tail);
+  const hitEtas = {} as Analysis["hitEtas"];
+  (Object.keys(BIG_HIT_THRESHOLDS) as BigHitKey[]).forEach((k) => {
+    hitEtas[k] = hitEta(survivalAt, BIG_HIT_THRESHOLDS[k]);
+  });
   return {
     state: states[states.length - 1] ?? "Normal",
     percentiles: {
@@ -257,10 +283,14 @@ export function analyze(multipliers: number[]): Analysis {
     regimes: detectRegimes(multipliers),
     pareto: paretoFit(multipliers),
     exponential: exponentialFit(multipliers),
-    eta: etaEstimate(multipliers),
     ladder: ladderETA(multipliers),
     dna: dnaMatch(multipliers),
     shapeDist: curveShapeDistribution(multipliers),
+    survivalAt,
+    target: targetForecast(survivalAt),
+    forecast: fullForecast(survivalAt),
+    tailAlpha: tail.alpha,
+    hitEtas,
   };
 }
 
@@ -274,6 +304,10 @@ export interface Candidate {
   range: [number, number];
   expectedValue: number;
   drivers: string[];
+  /** The target this candidate is aiming at, and the calibrated wait to it. */
+  bandMid: number;
+  pReach: number; // P(crash >= band mid) — one-round reach probability
+  eta: HitEta;    // expected rounds to the next crash >= band mid
 }
 
 function bandFor(state: State, p: Percentiles): [number, number] {
@@ -318,22 +352,141 @@ export function candidates(multipliers: number[], a: Analysis): Candidate[] {
     .map((c) => {
       const band = bandFor(c.state, a.percentiles);
       const [lo, hi] = band;
+      const mid = Math.max(lo, (lo + hi) / 2);
+      const reach = hitEta(a.survivalAt, mid);
       return {
         state: c.state,
         probability: c.p / total,
         range: band,
         expectedValue: (lo + hi) / 2 * (c.p / total),
         drivers: c.drivers,
+        bandMid: round2(mid),
+        pReach: reach.pReach,
+        eta: reach,
       };
     })
     .sort((x, y) => y.probability - x.probability);
+}
+
+/**
+ * Invert the calibrated survival curve: returns x where P(next round >= x) = s0,
+ * i.e. the (1 − s0)-quantile of the forecast next-round distribution.
+ *
+ * s0 = 0.5  -> median of the forecast
+ * s0 = 0.75 -> 25th percentile   (P(crash <= x) = 0.25)
+ * s0 = 0.10 -> 90th percentile   (P(crash <= x) = 0.90)
+ *
+ * Bisection on the monotone-decreasing survival, capped at maxX. This is a
+ * *forward* forecast of the next round (over the recent window), unlike the
+ * legacy estimatedCrashPoint which is the historical median of every crash.
+ */
+export function calibratedQuantile(survivalAt: (x: number) => number, s0: number, maxX = 1e5): number {
+  const s = (x: number) => clamp(survivalAt(x), 0, 1);
+  if (s0 <= 0) return maxX;
+  if (s0 >= 1) return 1;
+  let lo = 1; // s(lo) = 1 >= s0 (s0 < 1)
+  let hi = 2;
+  while (s(hi) > s0 && hi < maxX) hi *= 2;
+  hi = Math.min(hi, maxX);
+  if (s(hi) > s0) return maxX; // never crossed within the cap
+  for (let i = 0; i < 64; i++) {
+    const mid = (lo + hi) / 2;
+    if (s(mid) >= s0) lo = mid;
+    else hi = mid;
+    if (hi - lo < 1e-3) break;
+  }
+  return round2((lo + hi) / 2);
+}
+
+/**
+ * Recalibrated next-round target: the median of the calibrated survival
+ * distribution plus its 25th/90th percentiles (the same percentile span the
+ * legacy "round CI" used, now computed from the empirical + Hill-tail model
+ * over the recent window instead of the historical median of all crashes).
+ */
+export interface TargetForecast {
+  median: number;
+  p25: number;
+  p90: number;
+}
+
+export function targetForecast(survivalAt: (x: number) => number): TargetForecast {
+  return {
+    median: calibratedQuantile(survivalAt, 0.5),
+    p25: calibratedQuantile(survivalAt, 0.75),
+    p90: calibratedQuantile(survivalAt, 0.1),
+  };
+}
+
+/**
+ * Full-range forecast of the next round, sampled off the calibrated survival
+ * curve at every percentile the UI might display. A plain p25–p90 band is too
+ * loose to be an "expected target value"; the IQR (p25–p75) is the tight 50%
+ * interval, p05–p95 the full 90%, and p01–p99 the 98% envelope that lets a
+ * 55.98x-style tail target show up on the scale instead of clamping at 20x.
+ *
+ * All quantiles are forward forecasts of the *next* round (last 600-round
+ * window), not historical percentiles.
+ */
+export interface FullForecast {
+  p01: number;
+  p05: number;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+  p95: number;
+  p99: number;
+  /** Tight 50% interval (IQR). */
+  tight: [number, number];
+  /** Full 90% interval. */
+  full: [number, number];
+  /** 98% envelope — carries the extreme tail. */
+  extreme: [number, number];
+  /** IQR width, p75 − p25. */
+  iqr: number;
+}
+
+export function fullForecast(survivalAt: (x: number) => number): FullForecast {
+  const p01 = calibratedQuantile(survivalAt, 0.99);
+  const p05 = calibratedQuantile(survivalAt, 0.95);
+  const p10 = calibratedQuantile(survivalAt, 0.9);
+  const p25 = calibratedQuantile(survivalAt, 0.75);
+  const p50 = calibratedQuantile(survivalAt, 0.5);
+  const p75 = calibratedQuantile(survivalAt, 0.25);
+  const p90 = calibratedQuantile(survivalAt, 0.1);
+  const p95 = calibratedQuantile(survivalAt, 0.05);
+  const p99 = calibratedQuantile(survivalAt, 0.01);
+  return {
+    p01, p05, p10, p25, p50, p75, p90, p95, p99,
+    tight: [round2(p25), round2(p75)],
+    full: [round2(p05), round2(p95)],
+    extreme: [round2(p01), round2(p99)],
+    iqr: round2(p75 - p25),
+  };
+}
+
+/**
+ * A log-spaced sample of the calibrated survival curve for charting. Linear
+ * 1..20 sampling wastes the whole chart under 2x and clamps any real target
+ * (6x, 55.98x) off-scale; geometric spacing keeps equal *multiples* per grid
+ * cell so the tail is readable at any magnitude.
+ */
+export function survivalCurveLog(a: Analysis, maxX = 120, steps = 70): Array<{ x: number; p: number }> {
+  const lo = Math.log(1);
+  const hi = Math.log(maxX);
+  return Array.from({ length: steps }, (_, i) => {
+    const x = Math.exp(lo + (hi - lo) * (i / (steps - 1)));
+    return { x: round2(x), p: a.survivalAt(x) };
+  });
 }
 
 /** Survival-curve samples for the ETA chart. */
 export function survivalCurve(a: Analysis, max = 20, steps = 60): Array<{ x: number; p: number }> {
   return Array.from({ length: steps }, (_, i) => {
     const x = 1 + (max - 1) * (i / (steps - 1));
-    return { x: round2(x), p: a.eta.survivalAt(x) };
+    return { x: round2(x), p: a.survivalAt(x) };
   });
 }
 

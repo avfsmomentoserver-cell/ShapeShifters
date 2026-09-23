@@ -3,6 +3,7 @@
  */
 import { useMemo } from "react";
 import { ScopeChart, SurvivalChart, ProbBar, AnimatedNumber, colorFor } from "./charts";
+import { FullForecast } from "./FullForecast";
 import { useRounds } from "@/lib/store";
 import { analyze, candidates, probabilityAbove, type Analysis } from "@/lib/pipeline";
 import { clamp } from "@/lib/stats";
@@ -77,6 +78,9 @@ export function CommandCenter() {
       {/* THE PREDICTOR */}
       <PredictorCardLazy />
 
+      {/* THE FULL FORECAST — dedicated, prominent, full-range calibrated target */}
+      <FullForecast analysis={analysis} />
+
       <div className="grid gap-3 lg:grid-cols-[1.6fr_1fr]">
         {/* live scope */}
         <div className="panel">
@@ -126,12 +130,12 @@ export function CommandCenter() {
               <div className="space-y-3">
                 <div className="flex items-baseline gap-3">
                   <AnimatedNumber
-                    value={analysis.eta.estimatedCrashPoint}
+                    value={analysis.target.median}
                     format={(v) => `${v.toFixed(2)}×`}
                     className="stat-value"
                   />
                   <span className="text-xs text-muted-foreground">
-                    CI {analysis.eta.confidenceLower.toFixed(2)}–{analysis.eta.confidenceUpper.toFixed(2)}×
+                    p25 {analysis.target.p25.toFixed(2)} – p90 {analysis.target.p90.toFixed(2)}×
                   </span>
                 </div>
                 <div className="relative h-2 overflow-hidden rounded-full bg-secondary">
@@ -140,13 +144,13 @@ export function CommandCenter() {
                     style={{
                       background: "#38c7e8",
                       boxShadow: "0 0 8px #38c7e888",
-                      left: `${clamp(((analysis.eta.confidenceLower - 1) / 9) * 100, 0, 95)}%`,
-                      width: `${clamp(((analysis.eta.confidenceUpper - analysis.eta.confidenceLower) / 9) * 100, 3, 100)}%`,
+                      left: `${clamp(((analysis.target.p25 - 1) / 9) * 100, 0, 95)}%`,
+                      width: `${clamp(((analysis.target.p90 - analysis.target.p25) / 9) * 100, 3, 100)}%`,
                     }}
                   />
                 </div>
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  Hazard λ = {analysis.eta.hazardRate.toFixed(3)} · survival: empirical bulk, Hill-index tail. A fair tape has a tail index of 1.0.
+                  Median of the calibrated next-round curve (empirical bulk + Hill tail, last 600 rounds) · tail index α = {analysis.tailAlpha.toFixed(2)} — a fair tape sits at 1.0.
                 </p>
               </div>
             ) : <p className="text-xs text-muted-foreground">warming up…</p>}
