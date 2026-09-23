@@ -251,10 +251,38 @@ export interface Analysis {
   tailAlpha: number;
   /** Expected wait to the next hit at each big-hit threshold, recalibrated every round. */
   hitEtas: Record<"2x" | "5x" | "10x", HitEta>;
+  /** Expected wait to the next moonshot / mega / cosmic (20/50/100/1000×), same model. */
+  bandHitEtas: Record<BandHitKey, BandEta>;
 }
 
 export const BIG_HIT_THRESHOLDS = { "2x": 2, "5x": 5, "10x": 10 } as const;
 export type BigHitKey = keyof typeof BIG_HIT_THRESHOLDS;
+
+/**
+ * Entry points of the upper AVFS linguistic bands (lingBand): a round enters
+ * MOONSHOT at 20×, MEGA at 50×, COSMIC at 100×. 1000× is the mega/cosmic
+ * "jackpot" reach the ETAs-to-moonshots panel exists to time. These are the
+ * big siblings of BIG_HIT_THRESHOLDS — same calibrated survival, further out
+ * on the tail, so they carry a "tail extrapolation" flag more often.
+ */
+export const BAND_HIT_THRESHOLDS = { "20x": 20, "50x": 50, "100x": 100, "1000x": 1000 } as const;
+export type BandHitKey = keyof typeof BAND_HIT_THRESHOLDS;
+
+export interface BandEta {
+  key: BandHitKey;
+  threshold: number;
+  label: string;
+  eta: HitEta;
+}
+
+export function hitBandEtas(survivalAt: (x: number) => number): Record<BandHitKey, BandEta> {
+  const out = {} as Record<BandHitKey, BandEta>;
+  (Object.keys(BAND_HIT_THRESHOLDS) as BandHitKey[]).forEach((k) => {
+    const threshold = BAND_HIT_THRESHOLDS[k];
+    out[k] = { key: k, threshold, label: k.replace("x", "×"), eta: hitEta(survivalAt, threshold) };
+  });
+  return out;
+}
 
 export function analyze(multipliers: number[]): Analysis {
   const sorted = [...multipliers].sort((a, b) => a - b);
@@ -291,6 +319,7 @@ export function analyze(multipliers: number[]): Analysis {
     forecast: fullForecast(survivalAt),
     tailAlpha: tail.alpha,
     hitEtas,
+    bandHitEtas: hitBandEtas(survivalAt),
   };
 }
 

@@ -6,8 +6,10 @@
  * next-round distribution: an expected target value that accommodates any
  * magnitude (a 6x as readily as a 55.98x), a tight 50% interval (the IQR), a
  * full 90% interval, a 98% envelope, an adaptive log-scale chart that keeps
- * equal multiples per grid cell, a per-percentile ladder, the ETAs to the big
- * hits, and the model diagnostics that say how much to trust the tail.
+ * equal multiples per grid cell, a per-percentile ladder, a single "time to
+ * each magnitude" ladder (2x/5x/10x big hits run straight into 20x/50x/100x/
+ * 1000x moonshot-mega-cosmic), and the model diagnostics that say how much to
+ * trust the tail.
  *
  * Everything is sampled off the calibrated empirical + Hill-tail survival
  * curve (survival.py port) over the recent 600-round window, so it re-commits
@@ -15,7 +17,7 @@
  */
 import { useRounds } from "@/lib/store";
 import {
-  survivalCurveLog, type Analysis, type BigHitKey, BIG_HIT_THRESHOLDS,
+  survivalCurveLog, type Analysis, type BigHitKey, type BandHitKey,
 } from "@/lib/pipeline";
 import { AnimatedNumber, colorFor } from "./charts";
 
@@ -31,6 +33,15 @@ function niceCeil(v: number): number {
 }
 
 const X_TICKS = [1, 2, 3, 5, 10, 20, 50, 100];
+/** Big-hit thresholds (green leg of the ladder) and band entries (the tail leg). */
+const CHART_LINES: Array<{ t: number; c: string; leg: "big" | "band" }> = [
+  { t: 2, c: "#2bd97c", leg: "big" },
+  { t: 5, c: "#2bd97c", leg: "big" },
+  { t: 10, c: "#2bd97c", leg: "big" },
+  { t: 20, c: "#38c7e8", leg: "band" },
+  { t: 50, c: "#ffb020", leg: "band" },
+  { t: 100, c: "#ffb020", leg: "band" },
+];
 
 export function FullForecast({ analysis }: { analysis: Analysis | null }) {
   const { rounds, multipliers, lastAddedAt } = useRounds();
@@ -114,34 +125,32 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
 
         {/* RIGHT — adaptive log-scale distribution + quantile ladder */}
         <div className="min-w-0 space-y-3">
-          <ForecastChart analysis={analysis} f={f} maxX={niceCeil(Math.max(20, f.p99 * 1.15))} />
+          <ForecastChart analysis={analysis} f={f} maxX={niceCeil(Math.max(20, f.p99 * 1.15, 100))} />
           <QuantileLadder f={f} />
         </div>
       </div>
 
-      {/* ETAs to big hits — full-width strip */}
+      {/* time to each magnitude — the whole ladder as one forecast idea */}
       <div className="border-t border-border/70 px-4 py-3">
-        <p className="stat-label mb-2">ETAs to big hits — recalibrated every round</p>
-        <div className="grid grid-cols-3 gap-2">
-          {(Object.keys(BIG_HIT_THRESHOLDS) as BigHitKey[]).map((k) => {
-            const e = analysis.hitEtas[k];
-            return (
-              <div key={k} className="rounded border border-border bg-secondary/40 px-2.5 py-2">
-                <p className="text-[10px] uppercase tracking-widest" style={{ color: colorFor(e.threshold) }}>
-                  ≥ {e.threshold}×
-                </p>
-                <p className="mt-0.5 flex items-baseline gap-1">
-                  <AnimatedNumber value={e.eta} format={(v) => fmtRounds(v)} className="font-mono-num text-xl font-semibold" />
-                  <span className="text-[9px] text-muted-foreground">rounds</span>
-                </p>
-                <p className="text-[9px] text-muted-foreground">
-                  p={(e.pReach * 100).toFixed(2)}% · p90 {fmtRounds(e.p90)}
-                  {e.note ? " · tail" : ""}
-                </p>
-              </div>
-            );
-          })}
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <p className="stat-label">time to each magnitude — recalibrated every round</p>
+          <p className="text-[9px] text-muted-foreground">
+            <span style={{ color: "#2bd97c" }}>● big hit</span>
+            {"  "}
+            <span style={{ color: "#38c7e8" }}>● moonshot</span>
+            {"  "}
+            <span style={{ color: "#ffb020" }}>● mega / cosmic</span>
+            {"  "}
+            <span>· one ladder from 2× to 1000×</span>
+          </p>
         </div>
+        <HitLadder big={analysis.hitEtas} band={analysis.bandHitEtas} />
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+          One-round reach p drives a geometric wait (E = 1/p, CI ±1.5σ, p90 = −ln 0.1 / p). Bigger
+          magnitudes ride the Hill tail, so 20×+ tiles are flagged “tail” when the tape has too few
+          exceedances to trust the count directly — the ladder is one continuous forecast, not a
+          separate big-hit read.
+        </p>
       </div>
     </div>
   );
@@ -179,6 +188,71 @@ function Diag({ label, value, hint }: { label: string; value: string; hint?: str
       <p className="stat-label">{label}</p>
       <p className="mt-0.5 font-mono-num text-sm font-semibold">{value}</p>
       {hint && <p className="text-[9px] text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+const BAND_LEG_TONE: Record<string, string> = {
+  big: "#2bd97c",
+  "20x": "#38c7e8",
+  "50x": "#ffb020",
+  "100x": "#ffb020",
+  "1000x": "#ff4d5e",
+};
+
+/**
+ * One continuous "time to each magnitude" ladder: the big hits (2/5/10×) run
+ * straight into the band entries (20/50/100/1000×) so the forecast reads as a
+ * single idea — how long until the next 2×, then the next 10×, then the next
+ * moonshot, then the next mega — rather than two unrelated strips.
+ */
+function HitLadder({ big, band }: {
+  big: Analysis["hitEtas"];
+  band: Analysis["bandHitEtas"];
+}) {
+  const tiles: Array<{ key: string; label: string; threshold: number; eta: number; pReach: number; p90: number; note: string | null; tone: string }> = [
+    ...(["2x", "5x", "10x"] as BigHitKey[]).map((k) => ({
+      key: k, label: k, threshold: big[k].threshold,
+      eta: big[k].eta, pReach: big[k].pReach, p90: big[k].p90, note: big[k].note,
+      tone: BAND_LEG_TONE.big,
+    })),
+    ...(["20x", "50x", "100x", "1000x"] as BandHitKey[]).map((k) => {
+      const b = band[k];
+      return {
+        key: k, label: b.label, threshold: b.threshold,
+        eta: b.eta.eta, pReach: b.eta.pReach, p90: b.eta.p90, note: b.eta.note,
+        tone: BAND_LEG_TONE[k],
+      };
+    }),
+  ];
+
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+      {tiles.map((t) => {
+        const isBand = t.threshold >= 20;
+        return (
+          <div
+            key={t.key}
+            className="rounded border bg-secondary/40 px-2.5 py-2"
+            style={{ borderColor: `${t.tone}44` }}
+          >
+            <p className="flex items-center justify-between text-[10px] uppercase tracking-widest" style={{ color: t.tone }}>
+              <span>≥ {t.threshold}×</span>
+              {isBand && <span className="text-[8px] normal-case tracking-normal text-muted-foreground">
+                {t.key === "20x" ? "moonshot" : t.key === "50x" ? "mega" : t.key === "100x" ? "cosmic" : "jackpot"}
+              </span>}
+            </p>
+            <p className="mt-0.5 flex items-baseline gap-1">
+              <AnimatedNumber value={t.eta} format={(v) => fmtRounds(v)} className="font-mono-num text-xl font-semibold" />
+              <span className="text-[9px] text-muted-foreground">rounds</span>
+            </p>
+            <p className="text-[9px] text-muted-foreground">
+              p={(t.pReach * 100).toFixed(t.pReach < 0.01 ? 3 : 2)}% · p90 {fmtRounds(t.p90)}
+              {t.note ? " · tail" : ""}
+            </p>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -259,11 +333,11 @@ function ForecastChart({ analysis, f, maxX }: { analysis: Analysis; f: Analysis[
         {/* area + curve */}
         <path d={area} fill="#38c7e8" fillOpacity={0.08} />
         <path d={line} fill="none" stroke="#38c7e8" strokeWidth={1.6} />
-        {/* big-hit threshold lines */}
-        {[2, 5, 10].map((t) => (
-          <g key={t} opacity={t <= maxX ? 1 : 0}>
-            <line x1={X(t)} x2={X(t)} y1={PAD_T} y2={PAD_T + plotH} stroke={colorFor(t)} strokeOpacity={0.35} strokeDasharray="3 4" />
-            <text x={X(t) + 2} y={PAD_T + 10} fontSize="9" fill={colorFor(t)}>{t}×</text>
+        {/* the magnitude ladder: big-hit lines (green) + band entries (cyan/amber) */}
+        {CHART_LINES.filter((l) => l.t <= maxX).map((l) => (
+          <g key={l.t} opacity={l.leg === "band" ? 0.8 : 1}>
+            <line x1={X(l.t)} x2={X(l.t)} y1={PAD_T} y2={PAD_T + plotH} stroke={l.c} strokeOpacity={0.4} strokeDasharray={l.leg === "band" ? "5 3" : "3 4"} />
+            <text x={X(l.t) + 2} y={PAD_T + (l.leg === "band" ? 20 : 10)} fontSize="9" fill={l.c}>{l.t}×</text>
           </g>
         ))}
         {/* expected target marker */}

@@ -7,7 +7,8 @@ import { AnimatedNumber } from "./charts";
 import { useRounds } from "@/lib/store";
 import { api } from "@/lib/api";
 import { usePredictionLedger, walkForward, REALIZED, type LedgerEntry } from "@/lib/ledger";
-import { clamp } from "@/lib/stats";
+import { analyze } from "@/lib/pipeline";
+import { clamp, hitEta } from "@/lib/stats";
 
 const STATE_COLOR: Record<string, string> = {
   Collapse: "#ff4d5e", Shelf: "#38c7e8", Normal: "#2bd97c", Ignition: "#ffb020", Moonshot: "#ffb020",
@@ -21,6 +22,10 @@ export function PredictorCard() {
   const prevResolved = useRef(0);
 
   const wf = useMemo(() => walkForward(multipliers), [multipliers]);
+  const analysis = useMemo(
+    () => (multipliers.length >= 10 ? analyze(multipliers) : null),
+    [multipliers],
+  );
 
   // resolution flash when the newest entry resolves
   useEffect(() => {
@@ -48,6 +53,13 @@ export function PredictorCard() {
   const open = ledger.open;
   const confidence = open ? open.probability : 0;
   const ringR = 66, ringC = 2 * Math.PI * ringR;
+
+  /** Calibrated wait to the open target's band mid — recomputed as the tape moves. */
+  const targetEta = useMemo(() => {
+    if (!open || !analysis || multipliers.length < 10) return null;
+    const mid = Math.max(open.band[0], (open.band[0] + open.band[1]) / 2);
+    return { mid, hit: hitEta(analysis.survivalAt, mid) };
+  }, [open, analysis, multipliers]);
 
   return (
     <div className={`panel scanline relative overflow-hidden transition-shadow duration-700 ${flash === "hit" ? "shadow-[0_0_40px_rgba(43,217,124,0.25)]" : flash === "miss" ? "shadow-[0_0_40px_rgba(255,77,94,0.2)]" : ""}`}>
@@ -134,11 +146,24 @@ export function PredictorCard() {
             </p>
           )}
 
-          <div className="grid grid-cols-2 gap-2 border-t border-border/70 pt-3 sm:grid-cols-4">
+          {open && targetEta && (
+            <p className="text-[11px] text-muted-foreground">
+              ETA to this target ≈ <span className="font-mono-num font-semibold text-foreground">{fmtRounds(targetEta.hit.eta)} rounds</span>{" "}
+              ({fmtRounds(targetEta.hit.ciLower)}–{fmtRounds(targetEta.hit.ciUpper)}, p90 {fmtRounds(targetEta.hit.p90)}) —
+              one-round P(reach {targetEta.mid.toFixed(2)}×) = <span className="font-mono-num">{(targetEta.hit.pReach * 100).toFixed(1)}%</span>
+              {targetEta.hit.note ? ` · ${targetEta.hit.note}` : ""}
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-2 border-t border-border/70 pt-3 sm:grid-cols-5">
             <Metric label="session band acc" value={ledger.resolvedCount ? `${(ledger.bandAccuracy * 100).toFixed(0)}%` : "—"} sub={`${ledger.resolvedCount} resolved`} />
             <Metric label="session ≥2× acc" value={ledger.resolvedCount ? `${(ledger.accuracy2 * 100).toFixed(0)}%` : "—"} sub={`Brier ${ledger.avgBrier.toFixed(3)}`} />
             <Metric label="walk-forward ≥2×" value={`${(wf.hitRate2 * 100).toFixed(1)}%`} sub={`${wf.samples.toLocaleString()} scored`} />
             <Metric label="walk-forward ≥10×" value={wf.hitRate10 > 0 ? `${(wf.hitRate10 * 100).toFixed(2)}%` : "<0.01%"} sub={`Brier ${wf.brier10.toFixed(4)}`} />
+            <Metric
+              label="ETA to target"
+              value={targetEta ? `${fmtRounds(targetEta.hit.eta)} rds` : "—"}
+              sub={targetEta ? `p90 ${fmtRounds(targetEta.hit.p90)} · mid ${targetEta.mid.toFixed(2)}×` : "needs an open target"}
+            />
           </div>
           <p className="text-[10px] leading-relaxed text-muted-foreground">
             Every forecast is locked before the round and resolved after — no hindsight edits.
@@ -149,6 +174,8 @@ export function PredictorCard() {
     </div>
   );
 }
+
+const fmtRounds = (r: number) => (r < 99.5 ? r.toFixed(r < 20 ? 1 : 0) : "99+");
 
 function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (

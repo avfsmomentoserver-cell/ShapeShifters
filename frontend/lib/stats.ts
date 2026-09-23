@@ -318,8 +318,100 @@ export function curveShapeDistribution(multipliers: number[], sampleCount = 40):
 }
 
 // ---------------------------------------------------------------------------
+// Calibrated survival — port of backend/momento/survival.py
+//
+// The exp/pareto blend in etaEstimate above is the legacy engine: on a fair
+// tape it claims ~94% for 2x where the truth is ~48% (survival.py documents
+// exactly this failure). The calibrated estimator is honest by construction —
+// empirical counts wherever the tape has enough exceedances, a Hill/Pareto
+// tail beyond the support, and a smooth blend in between. It carries no
+// house-edge parameter, which is why it lands on the fair price.
+// ---------------------------------------------------------------------------
+
+const MIN_EXCEEDANCES = 8; // below this the empirical estimate is noise
+const TAIL_FRACTION = 0.15; // top 15% of the tape defines the tail
+
+export interface HillTail {
+  alpha: number;
+  u: number;
+  pU: number;
+  k: number;
+}
+
+export function hillAlpha(window: number[], tailFraction: number = TAIL_FRACTION): HillTail {
+  const xs = window.filter((m) => m > 1.0).sort((a, b) => a - b);
+  const n = xs.length;
+  if (n < 40) return { alpha: 1.0, u: 2.0, pU: 0.5, k: 0 };
+  const k = Math.min(Math.max(10, Math.floor(n * tailFraction)), n - 1);
+  const u = xs[n - k];
+  const logs: number[] = [];
+  for (let i = n - k; i < n; i++) if (xs[i] > u) logs.push(Math.log(xs[i] / u));
+  if (logs.length === 0) return { alpha: 1.0, u, pU: k / n, k };
+  let alpha = 1.0 / (logs.reduce((a, b) => a + b, 0) / logs.length);
+  alpha = Math.max(0.55, Math.min(2.5, alpha)); // fair tail index is exactly 1.0
+  return { alpha, u, pU: k / n, k };
+}
+
+export function tailSurvival(t: HillTail, x: number): number {
+  const { u, pU, alpha } = t;
+  if (x <= u || u <= 0) return clamp(pU, 0, 1);
+  return clamp(pU * Math.pow(u / x, alpha), 0, 1);
+}
+
+/** Best available estimate of P(next round reaches x) from the tape. */
+export function calibratedSurvival(window: number[], x: number, tail?: HillTail): number {
+  if (x <= 1) return 1;
+  const t = tail ?? hillAlpha(window);
+  const par = tailSurvival(t, x);
+  const n = window.length;
+  if (n === 0) return par;
+  const above = window.reduce((acc, m) => acc + (m >= x ? 1 : 0), 0);
+  if (above < MIN_EXCEEDANCES) return par;
+  const emp = above / n;
+  // blend once we are inside the tail region where the empirical count thins out
+  const w = above >= 4 * MIN_EXCEEDANCES
+    ? 0
+    : clamp(1 - (above - MIN_EXCEEDANCES) / (3 * MIN_EXCEEDANCES), 0, 1);
+  return clamp((1 - w) * emp + w * par, 0, 1);
+}
+
+// ---------------------------------------------------------------------------
 // ETA — hazard / survival from the empirical + exponential blend
 // ---------------------------------------------------------------------------
+
+export interface HitEta {
+  threshold: number;
+  pReach: number;       // P(next round >= threshold) — one-round reach probability
+  eta: number;          // expected rounds to the next hit (geometric wait)
+  ciLower: number;      // 1.5 sigma wait interval
+  ciUpper: number;
+  p90: number;          // rounds by which 90% of hits have landed
+  note: string | null;  // set when the estimate falls back below the empirical floor
+}
+
+/**
+ * Expected wait to the next round >= threshold, from a calibrated one-round
+ * reach probability. Rounds are independent, so the wait is geometric:
+ * E[N] = 1/p, sigma = sqrt(1 - p) / p.
+ *
+ * The survival estimator blends empirical counts with a Hill tail, and the
+ * empirical leg needs >= 8 exceedances — below that the number is a Pareto
+ * extrapolation, so it is flagged rather than silently trusted.
+ */
+export function hitEta(survivalAt: (x: number) => number, threshold: number): HitEta {
+  const pReach = clamp(survivalAt(threshold), 1e-4, 0.999);
+  const eta = 1 / pReach;
+  const sigma = Math.sqrt(1 - pReach) / pReach;
+  return {
+    threshold,
+    pReach,
+    eta,
+    ciLower: Math.max(1, eta - 1.5 * sigma),
+    ciUpper: eta + 1.5 * sigma,
+    p90: -Math.log(0.1) / pReach,
+    note: pReach < 0.008 ? "tail extrapolation — fewer than ~8 hits on tape" : null,
+  };
+}
 
 export interface ETAReport {
   estimatedCrashPoint: number;

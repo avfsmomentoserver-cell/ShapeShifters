@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { calibratedSurvival, hitEta, hillAlpha, tailSurvival, HOUSE_EDGE } from "@/lib/stats";
-import { calibratedQuantile, targetForecast, fullForecast } from "@/lib/pipeline";
+import { calibratedQuantile, targetForecast, fullForecast, BAND_HIT_THRESHOLDS, hitBandEtas, type BandHitKey } from "@/lib/pipeline";
 
 /**
  * Same inverse transform the backend's provably-fair seeder uses
@@ -176,5 +176,39 @@ describe("fullForecast — the full-range quantile ladder behind the dedicated p
     // reaches ~48x — exactly the 6x/55.98x-scale targets the panel exists for.
     expect(f.p99).toBeGreaterThan(20);
     expect(f.p99).toBeLessThan(100);
+  });
+});
+
+describe("hitBandEtas — ETAs to moonshots / megas / cosmic on the same fair law", () => {
+  // Same fair law the big-hit tests pin: P(X >= x) = (1-h)/x  =>  E[wait] = x/(1-h).
+  // The band ladder (20/50/100/1000x) must recover those waits and stay
+  // monotonically spaced, with the farthest reach flagged as tail extrapolation.
+  const tape = fairTape(42, 40000);
+  const band = hitBandEtas(survivalOf(tape));
+  const keys = Object.keys(BAND_HIT_THRESHOLDS) as BandHitKey[];
+
+  it("recovers the fair wait x/(1-h) at each band threshold", () => {
+    const closeRel = (got: number, want: number, tol: number) =>
+      expect(Math.abs(got - want) / want, `got ${got}, want ${want}`).toBeLessThan(tol);
+    for (const k of keys) {
+      const e = band[k];
+      const x = BAND_HIT_THRESHOLDS[k];
+      expect(e.threshold).toBe(x);
+      expect(e.eta.pReach).toBeCloseTo((1 - HOUSE_EDGE) / x, 2);
+      // tail tolerances widen as the threshold climbs (1/p amplifies the Hill noise)
+      closeRel(e.eta.eta, x / (1 - HOUSE_EDGE), k === "20x" ? 0.06 : k === "50x" ? 0.08 : k === "100x" ? 0.1 : 0.15);
+    }
+  });
+
+  it("is monotone: bigger magnitude => longer expected wait", () => {
+    const etas = keys.map((k) => band[k].eta.eta);
+    for (let i = 1; i < etas.length; i++) expect(etas[i - 1]).toBeLessThan(etas[i]);
+    // and the 2x big-hit ETA is shorter than every band ETA (same survival curve)
+    expect(band["20x"].eta.eta).toBeGreaterThan(2 / (1 - HOUSE_EDGE) * 0.9);
+  });
+
+  it("flags the 1000x jackpot as tail extrapolation but not the 20x moonshot", () => {
+    expect(band["1000x"].eta.note).not.toBeNull();
+    expect(band["20x"].eta.note).toBeNull();
   });
 });
