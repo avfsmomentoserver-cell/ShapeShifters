@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import (db, ev, fairness, ingest, math_models as mm, pipeline, randomness, strategies,
-               survival, windows)
+               survival, watcher, windows)
 
 VERSION = "6.2.0"
 SEED_SERVER = "momento-demo-server-seed-2f9c41a7b6e5"
@@ -27,7 +27,10 @@ SEED_CLIENT = "momento-demo-client"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init_db()
+    # ~/Downloads watcher: any .json/.jsonl dropped there feeds the live tape
+    watch_task = asyncio.create_task(watcher.run_watcher())
     yield
+    watch_task.cancel()
 
 
 app = FastAPI(
