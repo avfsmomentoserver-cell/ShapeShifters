@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { calibratedSurvival, hitEta, hillAlpha, tailSurvival, HOUSE_EDGE } from "@/lib/stats";
 import { calibratedQuantile, targetForecast, fullForecast, BAND_HIT_THRESHOLDS, hitBandEtas, type BandHitKey } from "@/lib/pipeline";
+import { verifyForecast } from "@/lib/verifyForecast";
 
 /**
  * Same inverse transform the backend's provably-fair seeder uses
@@ -210,5 +211,83 @@ describe("hitBandEtas — ETAs to moonshots / megas / cosmic on the same fair la
   it("flags the 1000x jackpot as tail extrapolation but not the 20x moonshot", () => {
     expect(band["1000x"].eta.note).not.toBeNull();
     expect(band["20x"].eta.note).toBeNull();
+  });
+});
+
+describe("verifyForecast — the measured loop: forecast vs actual next round, scored loose", () => {
+  const tape = fairTape(42, 6000);
+
+  it("scores ~50% of rounds inside the tight band on a fair tape — misses are expected, not failures", () => {
+    const v = verifyForecast(tape, { warmup: 300, step: 10 });
+    expect(v).not.toBeNull();
+    const c = v!.coverage;
+    expect(c.tight.samples).toBeGreaterThan(200);
+    // the tight band IS the 50% interval, so a fair tape must land it inside
+    // the honest binomial noise bar — not 100%, never 100%
+    expect(Math.abs(c.tight.share - 0.5)).toBeLessThan(Math.max(0.07, c.tight.noiseBar * 1.5));
+    // the "near" grade exists exactly for this: most tight-misses land in the
+    // wider full band rather than outside everything
+    expect(c.tight.near).toBeGreaterThan(c.tight.miss);
+    expect(c.full.share).toBeGreaterThan(0.8);
+    expect(c.extreme.share).toBeGreaterThan(0.9);
+    // and a correctly-missing model is NOT graded a failure
+    expect(["calibrated", "drift"]).toContain(v!.verdict.grade);
+  });
+
+  it("keeps the coverage accounting exact: every checkpoint is hit, near, or far — never negative", () => {
+    // regression: the denominator must be ALL checkpoints, or shares inflate
+    // past 100% and `miss` goes negative (far-misses dropped from the count)
+    const v = verifyForecast(tape, { warmup: 300, step: 10 })!;
+    for (const m of [v.coverage.tight, v.coverage.full, v.coverage.extreme]) {
+      expect(m.hit + m.near + m.miss).toBe(m.samples);
+      expect(m.miss).toBeGreaterThanOrEqual(0);
+      expect(m.share).toBeGreaterThanOrEqual(0);
+      expect(m.share).toBeLessThanOrEqual(1);
+    }
+    // a fair tape has ~2% extreme-band escapes and ~10% full-band escapes —
+    // both must be VISIBLE as far misses, not silently absorbed
+    expect(v.coverage.extreme.miss).toBeGreaterThan(0);
+    expect(v.coverage.full.miss).toBeGreaterThan(0);
+    // tight ⊂ full ⊂ extreme: the hit counts must nest
+    expect(v.coverage.tight.hit).toBeLessThanOrEqual(v.coverage.full.hit);
+    expect(v.coverage.full.hit).toBeLessThanOrEqual(v.coverage.extreme.hit);
+  });
+
+  it("keeps the target + 2x Brier near the fair floor on a fair tape", () => {
+    const v = verifyForecast(tape, { warmup: 300, step: 10 })!;
+    // on a fair tape P(>=2) ≈ 0.48, so the best achievable Brier is ≈ 0.19
+    // (the 0.25 coin-flip floor is for p=0.5 exactly); anything near it is honest
+    expect(v.medianBrier).toBeLessThan(0.32);
+    expect(v.fairBrier).toBeCloseTo(0.25, 2);
+  });
+
+  it("the ETAs track the realized waits (mean predicted ≈ mean realized)", () => {
+    const v = verifyForecast(tape, { warmup: 300, step: 10 })!;
+    const w2 = v.wait.find((w) => w.threshold === 2)!;
+    const w10 = v.wait.find((w) => w.threshold === 10)!;
+    expect(w2.realizedMean).toBeGreaterThan(1); // enough hits measured
+    // 1/p is the geometric mean wait; the realized mean gap must agree within
+    // sampling noise — not by 2x (the legacy blend's error class)
+    expect(w2.ratio).toBeGreaterThan(0.75);
+    expect(w2.ratio).toBeLessThan(1.35);
+    expect(w10.ratio).toBeGreaterThan(0.6);
+    expect(w10.ratio).toBeLessThan(1.6);
+  });
+
+  it("returns null on a short tape rather than a bogus verdict", () => {
+    expect(verifyForecast(fairTape(3, 200), { warmup: 150 })).toBeNull();
+  });
+
+  it("detects a tape that drifts heavy-tailed late in the run", () => {
+    // first 6000 rounds fair (α ≈ 1.0), last 2000 fair with h=0 (α ≈ 0.75):
+    // the model's 600-round window must be seen re-baselining, and the verdict
+    // must say the tape moved rather than that the model is broken
+    const drifted = [...fairTape(42, 6000), ...fairTape(7, 2000, 0)];
+    const v = verifyForecast(drifted, { warmup: 300, step: 10 })!;
+    const early = v.tailPath.slice(0, Math.floor(v.tailPath.length * 0.6));
+    const late = v.tailPath.slice(-Math.floor(v.tailPath.length * 0.4));
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    expect(avg(late.map((p) => p.alpha))).toBeLessThan(avg(early.map((p) => p.alpha)) - 0.05);
+    expect(v.verdict.grade).toBe("drift");
   });
 });

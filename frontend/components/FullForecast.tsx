@@ -15,10 +15,12 @@
  * curve (survival.py port) over the recent 600-round window, so it re-commits
  * on every round and stays honest about a fair tape.
  */
+import { useMemo, useRef } from "react";
 import { useRounds } from "@/lib/store";
 import {
   survivalCurveLog, type Analysis, type BigHitKey, type BandHitKey,
 } from "@/lib/pipeline";
+import { verifyForecast, type ForecastVerification } from "@/lib/verifyForecast";
 import { AnimatedNumber, colorFor } from "./charts";
 
 /** Format a multiplier: 2 decimals < 10, 1 < 100, 0 above. */
@@ -45,6 +47,26 @@ const CHART_LINES: Array<{ t: number; c: string; leg: "big" | "band" }> = [
 
 export function FullForecast({ analysis }: { analysis: Analysis | null }) {
   const { rounds, multipliers, lastAddedAt } = useRounds();
+
+  // The verification replays the recorded tape walk-forward — at each
+  // checkpoint the forecast is recomputed from the rounds BEFORE it, then
+  // measured against the actual next round. That replay is O(n) and must not
+  // run on every tick: key it to the checkpoint boundary (floor((n-warmup)/
+  // step)) so it recomputes exactly when a new 15-round block lands — the
+  // natural cadence of a per-checkpoint measurement.
+  const WARMUP = 300, VSTEP = 15;
+  const ckpt = multipliers.length > WARMUP
+    ? Math.floor((multipliers.length - WARMUP) / VSTEP)
+    : 0;
+  const lastVerify = useRef<ForecastVerification | null>(null);
+  const ckptRef = useRef(-1);
+  const verification = useMemo<ForecastVerification | null>(() => {
+    if (ckptRef.current === ckpt) return lastVerify.current;
+    ckptRef.current = ckpt;
+    lastVerify.current = verifyForecast(multipliers, { warmup: WARMUP, step: VSTEP });
+    return lastVerify.current;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ckpt]);
 
   if (!analysis || multipliers.length < 10) {
     return (
@@ -152,6 +174,9 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
           separate big-hit read.
         </p>
       </div>
+
+      {/* verification — the same forecast, measured against the rounds it predicted */}
+      <VerificationSection v={verification} rounds={rounds.length} />
     </div>
   );
 }
@@ -253,6 +278,152 @@ function HitLadder({ big, band }: {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+const pctS = (x: number) => `${(x * 100).toFixed(1)}%`;
+
+function Pbar({ value, expected, noise }: { value: number; expected: number; noise: number }) {
+  return (
+    <div className="relative h-1.5 w-28 overflow-hidden rounded-full bg-secondary sm:w-36">
+      <div
+        className="absolute inset-y-0 rounded-full"
+        style={{
+          left: `${Math.min(96, value * 100)}%`,
+          width: 4,
+          background: Math.abs(value - expected) <= Math.max(0.08, noise) ? "#2bd97c" : "#ffb020",
+        }}
+      />
+      <div
+        className="absolute inset-y-0"
+        style={{ left: `${Math.min(97, expected * 100 - 0.75)}%`, width: 1.5, background: "#38c7e8", opacity: 0.7 }}
+      />
+    </div>
+  );
+}
+
+const GRADE_TONE: Record<string, { c: string; label: string }> = {
+  calibrated: { c: "#2bd97c", label: "calibrated" },
+  drift: { c: "#38c7e8", label: "tape drift" },
+  miscalibrated: { c: "#ffb020", label: "miscalibrated" },
+  noise: { c: "#8a93a6", label: "too few samples" },
+};
+
+/**
+ * The measurement half of the forecast loop: the forecast as committed at each
+ * checkpoint, replayed against the actual next round. Loose by construction —
+ * each band is compared against the rate it PROMISES (50/90/98), a miss is
+ * graded (near = inside the next wider band, not a failure), and the verdict
+ * says WHY when it's off: tape drift vs miscalibration vs not-enough-data.
+ */
+function VerificationSection({ v, rounds }: { v: ForecastVerification | null; rounds: number }) {
+  if (!v) {
+    return (
+      <div className="border-t border-border/70 px-4 py-3">
+        <p className="stat-label">forecast verification — measured against the rounds it predicted</p>
+        <p className="mt-1.5 text-[10px] text-muted-foreground">
+          needs ≈350+ recorded rounds to start scoring (walk-forward: every forecast is recomputed
+          from the tape before it, so nothing is graded with hindsight).
+        </p>
+      </div>
+    );
+  }
+  const g = GRADE_TONE[v.verdict.grade];
+  const c = v.coverage;
+  const regime = v.regime;
+  const alphaDir = regime.alphaDrift < -0.12 ? "fatter" : regime.alphaDrift > 0.12 ? "thinner" : "holding";
+  return (
+    <div className="border-t border-border/70 px-4 py-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="stat-label">forecast verification — the loop, measured on {v.samples} checkpoints × every {v.step}th round</p>
+        <span
+          className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest"
+          style={{ color: g.c, borderColor: `${g.c}55`, background: `${g.c}12` }}
+        >
+          {g.label}
+        </span>
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-foreground/85">{v.verdict.headline}</p>
+
+      <div className="mt-2.5 grid gap-x-6 gap-y-1.5 md:grid-cols-2">
+        {/* coverage vs the promised rates — the core of the loose scoring */}
+        {(
+          [
+            ["tight 50% band", c.tight],
+            ["full 90% band", c.full],
+            ["extreme 98% band", c.extreme],
+          ] as const
+        ).map(([label, m]) => (
+          <div key={label} className="flex items-center gap-2.5 rounded border border-border/60 bg-secondary/30 px-2.5 py-1.5">
+            <span className="w-28 shrink-0 text-[10px] text-muted-foreground">{label}</span>
+            <Pbar value={m.share} expected={m.expected} noise={m.noiseBar} />
+            <span className="font-mono-num text-xs font-semibold">{pctS(m.share)}</span>
+            <span className="text-[9px] text-muted-foreground">
+              / {pctS(m.expected)} promised · near {m.near} · far {m.miss}
+            </span>
+            <span className="ml-auto font-mono-num text-[9px] text-muted-foreground">
+              {m.error >= 0 ? "+" : ""}{pctS(m.error)}
+            </span>
+          </div>
+        ))}
+        {/* the target itself, as a calibrated probability */}
+        <div className="flex items-center gap-2.5 rounded border border-border/60 bg-secondary/30 px-2.5 py-1.5">
+          <span className="w-28 shrink-0 text-[10px] text-muted-foreground">P(≥2×) target</span>
+          <span className="font-mono-num text-xs font-semibold">{v.medianBrier.toFixed(3)}</span>
+          <span className="text-[9px] text-muted-foreground">
+            Brier vs {v.fairBrier.toFixed(2)} fair-floor
+          </span>
+        </div>
+      </div>
+
+      {/* ETAs vs the waits that actually happened */}
+      <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+        {v.wait.map((w) => {
+          const r = w.ratio;
+          const tone = w.realizedMean === 0 ? "#8a93a6" : Math.abs(r - 1) <= 0.35 ? "#2bd97c" : r > 1 ? "#ffb020" : "#38c7e8";
+          const word = w.realizedMean === 0 ? "no hits yet" : Math.abs(r - 1) <= 0.35 ? "on time" : r > 1 ? "slower" : "faster";
+          return (
+            <div key={w.threshold} className="rounded border border-border/60 bg-secondary/30 px-2.5 py-1.5">
+              <p className="text-[10px] text-muted-foreground">{w.label} wait</p>
+              <p className="mt-0.5 font-mono-num text-sm font-semibold" style={{ color: tone }}>
+                {w.realizedMean === 0 ? "—" : `${fmtRounds(w.realizedMean)} vs ${fmtRounds(w.predictedMean)}`}
+              </p>
+              <p className="text-[9px] text-muted-foreground">
+                realized vs predicted · {w.realizedMean === 0 ? "waiting" : word}
+                {w.realizedMean > 0 && ` (${r.toFixed(2)}×)`} · {w.hits} hits
+              </p>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* recent regime vs the earlier baseline — the investigation trail */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+        <span>
+          recent 25% — tight <span className="font-mono-num text-foreground/85">{pctS(v.recent.tightShare)}</span> · full{" "}
+          <span className="font-mono-num text-foreground/85">{pctS(v.recent.fullShare)}</span>
+        </span>
+        <span>
+          regime — α <span className="font-mono-num text-foreground/85">{regime.alphaEarlier.toFixed(2)} → {regime.alphaNow.toFixed(2)}</span> (
+          {alphaDir}) · P(≥2×){" "}
+          <span className="font-mono-num text-foreground/85">{pctS(regime.pAbove2Earlier)} → {pctS(regime.pAbove2Now)}</span>
+        </span>
+        {v.verdict.grade === "drift" && <span className="text-muted-foreground/80">the 600-round window lags a moving tape — expectations re-baseline each round</span>}
+      </div>
+
+      {/* rectification notes — what to look at, in order */}
+      {v.verdict.notes.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {v.verdict.notes.map((n, i) => (
+            <p key={i} className="flex gap-1.5 text-[10px] leading-relaxed text-muted-foreground">
+              <span className="shrink-0 text-primary/70">→</span>
+              {n}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
