@@ -10,8 +10,9 @@
 const RAW_API = "__PORT_8000__";
 export const API_BASE = RAW_API.startsWith("__") ? "http://localhost:8000" : RAW_API;
 
-/** Stable per-tab identity. In-memory only — no storage APIs available. */
-export const VISITOR_ID = `v-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+/** Shared workspace identity. The ~/Downloads watcher ingests as "local", so the
+ * browser uses the same id to see the same tape and receive its WebSocket pushes. */
+export const VISITOR_ID = "local";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly body?: unknown) {
