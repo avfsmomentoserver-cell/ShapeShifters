@@ -91,10 +91,31 @@ def classify_state(window: Sequence[float]) -> str:
 
 
 def state_sequence(multipliers: Sequence[float]) -> List[str]:
+    """Full label sequence — O(n^2); only needed when a caller wants every label.
+
+    ``analyze`` consumes just ``states[-1]`` and ``states[-300:]``, so it uses
+    :func:`state_tail` instead. Kept for completeness / external callers.
+    """
     labels: List[str] = []
     for i in range(len(multipliers)):
         labels.append(classify_state(multipliers[: i + 1]))
     return labels
+
+
+def state_tail(multipliers: Sequence[float], count: int) -> List[str]:
+    """Compute only the last ``count`` state labels.
+
+    ``classify_state`` is causal: the label at position ``i`` depends only on
+    ``multipliers[:i+1]``, never on what comes after. ``analyze`` reads only
+    ``states[-1]`` (current state) and ``states[-300:]`` (transition matrix),
+    so materialising the whole n-label sequence was O(n^2) work to obtain 301
+    labels — measured at ~6s for a 4,000-round tape. Computing just the last
+    ``count`` positions is O(n) and byte-for-byte identical for the consumed
+    outputs.
+    """
+    n = len(multipliers)
+    start = max(0, n - count)
+    return [classify_state(multipliers[: i + 1]) for i in range(start, n)]
 
 
 def transition_matrix(labels: Sequence[str]) -> Dict[str, Dict[str, float]]:
@@ -188,7 +209,10 @@ def dna_match(multipliers: Sequence[float], pattern_len: int = 8, top_k: int = 6
 
 def analyze(multipliers: Sequence[float]) -> Dict[str, Any]:
     s = sorted(multipliers)
-    states = state_sequence(multipliers)
+    # Only the current state and the last 300 labels are consumed (below), so
+    # compute just those via the O(n) state_tail rather than the O(n^2) full
+    # sequence — ~6s on a 4,000-round tape for no change in the output.
+    states = state_tail(multipliers, 301)
     return {
         "state": states[-1] if states else "Normal",
         "percentiles": {f"p{q}": round(mm.quantile(s, q / 100), 4) for q in (10, 25, 50, 75, 90, 95)},

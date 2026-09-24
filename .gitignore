@@ -15,8 +15,16 @@ build/
 # Database files
 momento.db
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+
+# Watcher runtime state (persisted seen-file cache, rebuilt on first run)
+watcher_seen.json
+
+# Local evidence corpus (prior-data DBs used by /api/seed — user data, not code)
+seed/
 
 # Data files
 data/rounds.json

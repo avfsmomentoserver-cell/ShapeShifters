@@ -247,6 +247,8 @@ export interface Analysis {
   target: TargetForecast;
   /** Full-range next-round forecast: p01..p99 ladder + tight/full/extreme intervals. */
   forecast: FullForecast;
+  /** Expected value (mean) of the next round — the responsive, unlimited-range headline estimate. */
+  expectedValue: ExpectedValue;
   /** Hill tail index over the recent window — a fair tape sits at 1.0. */
   tailAlpha: number;
   /** Expected wait to the next hit at each big-hit threshold, recalibrated every round. */
@@ -317,6 +319,7 @@ export function analyze(multipliers: number[]): Analysis {
     survivalAt,
     target: targetForecast(survivalAt),
     forecast: fullForecast(survivalAt),
+    expectedValue: expectedValue(multipliers),
     tailAlpha: tail.alpha,
     hitEtas,
     bandHitEtas: hitBandEtas(survivalAt),
@@ -494,6 +497,42 @@ export function fullForecast(survivalAt: (x: number) => number): FullForecast {
     extreme: [round2(p01), round2(p99)],
     iqr: round2(p75 - p25),
   };
+}
+
+/**
+ * Expected value of the next round — the headline "estimated value".
+ *
+ * Why the mean and not the median: the median of a 600-round window is a
+ * robust estimator — measured per-round delta is 0.0000x on a live tape, so a
+ * headline built on it looks frozen even when every value re-commits. The mean
+ * is the honest E[next round] under i.i.d. rounds: it includes the whole tail
+ * (no upper bound — the "unlimited range"), and it responds to each new round
+ * and to every big hit. Over the full tape it lands where the prior seed
+ * corpora do (~13x), which is the cross-validation the estimate is anchored on.
+ */
+export interface ExpectedValue {
+  /** Arithmetic mean of the full tape = E[next round] under i.i.d. Unbounded: the tail is in. */
+  full: number;
+  /** Mean of the last 200 rounds — the current regime's estimate (drifts with the tape). */
+  recent: number;
+  /** Rounds used for `full`. */
+  n: number;
+  /** Largest multiplier on the tape — the observed top of the unlimited range. */
+  max: number;
+}
+
+export function expectedValue(multipliers: number[]): ExpectedValue {
+  const n = multipliers.length;
+  if (!n) return { full: 1, recent: 1, n: 0, max: 1 };
+  let sum = 0;
+  let mx = 1;
+  for (const m of multipliers) {
+    sum += m;
+    if (m > mx) mx = m;
+  }
+  const recentWindow = multipliers.slice(-200);
+  const recent = recentWindow.reduce((a, b) => a + b, 0) / recentWindow.length;
+  return { full: round2(sum / n), recent: round2(recent), n, max: mx };
 }
 
 /**

@@ -33,8 +33,69 @@ POLL_SECONDS = 1.0
 DEFAULT_DIR = str(Path.home() / "Downloads")
 SOURCE = "watcher"
 
-# (path -> (size, mtime, byte_offset)) for files we have already read
+# (path -> (size, mtime, byte_offset)) for files we have already read.
+# Persisted to disk next to the DB: the cache used to be in-memory, so every
+# restart re-ingested the whole watch directory (~1,600 rounds of old history)
+# through the live pipeline — wedging the event loop for minutes and filling
+# the tape with duplicates. With a persistent cache a restart ingests nothing.
 _seen: Dict[str, Tuple[int, float, int]] = {}
+_seen_dirty = False
+
+
+def _seen_path() -> Path:
+    from . import db as _db
+    return Path(_db.DB_PATH).with_name("watcher_seen.json")
+
+
+def _save_seen() -> None:
+    global _seen_dirty
+    try:
+        data = {k: [s, m, o] for k, (s, m, o) in _seen.items()}
+        tmp = _seen_path().with_name("watcher_seen.json.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, _seen_path())
+        _seen_dirty = False
+    except OSError as exc:
+        log.warning("watcher: could not persist seen-state: %s", exc)
+
+
+def _load_seen() -> None:
+    """Restore the seen-cache, or bootstrap it on the very first run.
+
+    First-run bootstrap: record every existing file as already-seen WITHOUT
+    ingesting it. Those files are prior history — the tape already carries
+    them — and the watcher's job is to feed *new* rounds, not to replay the
+    archive (replaying it inserts ~1,600 duplicates per restart).
+    """
+    global _seen_dirty
+    try:
+        raw = _seen_path().read_text(encoding="utf-8")
+        data = json.loads(raw)
+        for k, v in data.items():
+            if isinstance(v, (list, tuple)) and len(v) == 3:
+                _seen[k] = (int(v[0]), float(v[1]), int(v[2]))
+        log.info("watcher: restored %d file(s) of seen-state from %s",
+                 len(_seen), _seen_path().name)
+        return
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, ValueError, TypeError, OSError) as exc:
+        log.warning("watcher: seen-state unreadable (%s); bootstrapping", exc)
+    try:
+        watch_dir = Path(os.environ.get("MOMENTO_WATCH_DIR") or DEFAULT_DIR).expanduser()
+        for path in watch_dir.iterdir():
+            if path.suffix.lower() not in (".json", ".jsonl", ".ndjson"):
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            _seen[str(path)] = (st.st_size, st.st_mtime, st.st_size)
+        _save_seen()
+        log.info("watcher: first run — marked %d existing file(s) as seen "
+                 "(archive not re-ingested); only new files feed the tape", len(_seen))
+    except OSError as exc:
+        log.warning("watcher: could not bootstrap seen-state: %s", exc)
 
 
 def _extract_multipliers(value: Any) -> List[Dict[str, Any]]:
@@ -140,14 +201,21 @@ def _scan(watch_dir: Path) -> List[Tuple[Path, List[Dict[str, Any]]]]:
                     rounds = appended
             except OSError:
                 rounds = []
-        _seen[key] = (size, mtime, size)
+            _seen[key] = (size, mtime, size)
+            _seen_dirty = True
         if rounds:
             out.append((path, rounds))
     return out
 
 
 async def _ingest_rounds(visitor: str, rounds: List[Dict[str, Any]]) -> int:
-    """Insert rounds through the live pipeline (resolves predictions, broadcasts)."""
+    """Insert rounds through the live pipeline (resolves predictions, broadcasts).
+
+    Yields to the event loop between rounds: _ingest is fully synchronous
+    (analyze + predict + broadcast) and a backlog of hundreds of rounds would
+    otherwise wedge the loop — no WS messages, no HTTP, no "Application
+    startup complete" — for minutes.
+    """
     from .api import _ingest  # local import to avoid a circular import at module load
 
     inserted = 0
@@ -157,6 +225,7 @@ async def _ingest_rounds(visitor: str, rounds: List[Dict[str, Any]]) -> int:
             continue
         await _ingest(visitor, m, SOURCE)
         inserted += 1
+        await asyncio.sleep(0)
     return inserted
 
 
@@ -166,12 +235,15 @@ async def run_watcher(visitor: str = db.DEFAULT_VISITOR,
     """Background task: poll the watch directory and ingest new rounds."""
     directory = Path(watch_dir or os.environ.get("MOMENTO_WATCH_DIR") or DEFAULT_DIR).expanduser()
     log.info("watcher: watching %s for new rounds (visitor=%s)", directory, visitor)
+    _load_seen()
     while True:
         try:
             for path, rounds in _scan(directory):
                 n = await _ingest_rounds(visitor, rounds)
                 if n:
                     log.info("watcher: ingested %d round(s) from %s", n, path.name)
+            if _seen_dirty:
+                _save_seen()
         except Exception:
             log.exception("watcher: scan failed")
         await asyncio.sleep(poll_seconds)

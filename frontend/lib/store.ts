@@ -100,20 +100,32 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     return stop;
   }, [refresh]);
 
-  // Live fallback. The hosted preview proxies plain HTTP reliably but websocket
-  // frames can be dropped by the proxy, which would leave the tape silently
-  // stale while the generator keeps producing rounds. Whenever the feed is
-  // running we also poll the backend, so pushes are a latency win rather than a
-  // correctness requirement.
+  // Activity-driven fallback. The hosted preview proxies plain HTTP reliably
+  // but can drop websocket frames, which would leave the tape silently stale
+  // while rounds keep arriving. The tape is fed by the watcher (external, on
+  // its own cadence) even when the sim is OFF, so this cannot be gated on
+  // isLive — that was exactly how the panels froze: sim off, WS frame dropped
+  // by the proxy, and no poll left to recover. Instead: poll as long as the
+  // tape has moved recently, and stop after 45s of silence so an idle app
+  // stops burning requests. Each new round re-arms the window via
+  // lastAddedAt (bumped by both the WS push and refresh()).
   useEffect(() => {
-    if (!isLive) return;
+    if (!lastAddedAt) return;
     const ms = Math.max(2000, settings?.liveFeedIntervalMs ?? 2500);
+    const idleMs = 45_000;
+    const stopAt = Date.now() + idleMs;
     const id = setInterval(() => {
       void refresh();
       api.get<LiveContext>("/context").then(setContext).catch(() => undefined);
     }, ms);
-    return () => clearInterval(id);
-  }, [isLive, refresh, settings?.liveFeedIntervalMs]);
+    const killer = setInterval(() => {
+      if (Date.now() > stopAt) clearInterval(id);
+    }, 1000);
+    return () => {
+      clearInterval(id);
+      clearInterval(killer);
+    };
+  }, [lastAddedAt, refresh, settings?.liveFeedIntervalMs]);
 
   const setIsLive = useCallback(async (next: boolean) => {
     setIsLiveState(next);

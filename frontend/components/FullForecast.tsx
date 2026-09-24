@@ -1,27 +1,55 @@
 /**
  * Full Forecast — the dedicated, prominent next-round forecast panel.
  *
- * Where the old "target update" showed a single median plus a loose p25–p90
- * band on a fixed 1–20 scale, this panel renders the *whole* calibrated
- * next-round distribution: an expected target value that accommodates any
- * magnitude (a 6x as readily as a 55.98x), a tight 50% interval (the IQR), a
- * full 90% interval, a 98% envelope, an adaptive log-scale chart that keeps
- * equal multiples per grid cell, a per-percentile ladder, a single "time to
- * each magnitude" ladder (2x/5x/10x big hits run straight into 20x/50x/100x/
- * 1000x moonshot-mega-cosmic), and the model diagnostics that say how much to
- * trust the tail.
+ * The headline is the EXPECTED VALUE (arithmetic mean) of the next round over
+ * the whole tape — the statistic that actually re-commits on every round and
+ * carries the unlimited tail (a 55.98x jackpot is IN the number, not clamped
+ * off a 20x scale). The 600-round-window median is the robust sub-mark: it is
+ * measured to move 0.0000x per round, so it labels the center of gravity, not
+ * the estimate.
  *
- * Everything is sampled off the calibrated empirical + Hill-tail survival
- * curve (survival.py port) over the recent 600-round window, so it re-commits
- * on every round and stays honest about a fair tape.
+ * Everything else renders the whole calibrated next-round distribution: a
+ * tight 50% interval (the IQR), a full 90% interval, a 98% envelope, the
+ * observed unlimited range, an adaptive log-scale chart that keeps equal
+ * multiples per grid cell, a per-percentile ladder, a single "time to each
+ * magnitude" ladder (2x/5x/10x big hits run straight into 20x/50x/100x/1000x
+ * moonshot-mega-cosmic), the seed-folder prior data the estimate is validated
+ * against, and the model diagnostics that say how much to trust the tail.
+ *
+ * The quantile ladder is sampled off the calibrated empirical + Hill-tail
+ * survival curve (survival.py port) over the recent 600-round window, so it
+ * re-commits on every round and stays honest about a fair tape.
  */
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "@/lib/api";
 import { useRounds } from "@/lib/store";
 import {
   survivalCurveLog, type Analysis, type BigHitKey, type BandHitKey,
 } from "@/lib/pipeline";
 import { verifyForecast, type ForecastVerification } from "@/lib/verifyForecast";
 import { AnimatedNumber, colorFor } from "./charts";
+
+/** Prior-data reference from the repo seed/ folder (see backend/momento/seed.py). */
+export interface SeedEvidence {
+  found: boolean;
+  corpora: string[];
+  combined: { count: number; mean: number; median: number; p95: number; p99: number; max: number };
+  byCorpus: Record<string, { count: number; mean: number; median: number; p95: number; p99: number; max: number }>;
+  note: string;
+}
+
+/** One-time fetch of the seed corpus — it never changes under us. */
+export function useSeedEvidence(): SeedEvidence | null {
+  const [evidence, setEvidence] = useState<SeedEvidence | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.get<SeedEvidence>("/seed")
+      .then((e) => { if (live) setEvidence(e); })
+      .catch(() => { if (live) setEvidence(null); });
+    return () => { live = false; };
+  }, []);
+  return evidence;
+}
 
 /** Format a multiplier: 2 decimals < 10, 1 < 100, 0 above. */
 const fmtX = (v: number): string =>
@@ -47,6 +75,7 @@ const CHART_LINES: Array<{ t: number; c: string; leg: "big" | "band" }> = [
 
 export function FullForecast({ analysis }: { analysis: Analysis | null }) {
   const { rounds, multipliers, lastAddedAt } = useRounds();
+  const seed = useSeedEvidence();
 
   // The verification replays the recorded tape walk-forward — at each
   // checkpoint the forecast is recomputed from the rounds BEFORE it, then
@@ -90,24 +119,24 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
       </div>
 
       <div className="grid gap-4 p-4 lg:grid-cols-[340px_minmax(0,1fr)]">
-        {/* LEFT — target value + tight/full/extreme ranges + diagnostics */}
+        {/* LEFT — expected value + unlimited range + robust sub-mark + seed evidence */}
         <div className="space-y-3">
           <div>
-            <p className="stat-label">expected target (median)</p>
+            <p className="stat-label">next round — estimated value (E[X], unlimited range)</p>
             <div className="flex items-baseline gap-1.5">
               <AnimatedNumber
-                value={f.p50}
+                value={analysis.expectedValue.full}
                 format={(v) => `${fmtX(v)}×`}
                 className="font-mono-num text-5xl font-bold leading-none"
               />
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
               state <span className="font-mono-num" style={{ color: colorFor(f.p50) }}>{analysis.state}</span> ·
-              P(≥ target) = 50% by definition
+              median {fmtX(f.p50)}× (robust) · P(≥ EV) = the tail's own weight
             </p>
           </div>
 
-          {/* range stack */}
+          {/* range stack — the full observed span is the unlimited range */}
           <div className="space-y-1.5">
             <RangeRow
               tone="tight"
@@ -130,7 +159,17 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
               hi={f.extreme[1]}
               sub={`p01–p99 · tail reach`}
             />
+            <RangeRow
+              tone="extreme"
+              label="unlimited range (observed)"
+              lo={1}
+              hi={analysis.expectedValue.max}
+              sub={`no cap — max ${fmtX(analysis.expectedValue.max)}× on ${analysis.expectedValue.n.toLocaleString()} rounds`}
+            />
           </div>
+
+          {/* seed evidence — the estimate validated against prior data */}
+          <SeedEvidenceRow seed={seed} ev={analysis.expectedValue} />
 
           {/* diagnostics */}
           <div className="grid grid-cols-3 gap-1.5">
@@ -139,9 +178,11 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
             <Diag label="P(≥10×)" value={`${(sAt(10) * 100).toFixed(2)}%`} />
           </div>
           <p className="text-[10px] leading-relaxed text-muted-foreground">
-            Sampled off the calibrated next-round curve (empirical bulk + Hill tail, last 600 rounds).
-            The tail α shows how heavy the right tail is: <span className="font-mono-num">α &gt; 1</span> decays
-            faster than fair, <span className="font-mono-num">α &lt; 1</span> fatter.
+            E[X] is the arithmetic mean of the whole tape — it carries the entire tail
+            (no upper bound) and re-commits with every round. The median is the robust
+            sub-mark: it barely moves by design. The tail α shows how heavy the right
+            tail is: <span className="font-mono-num">α &gt; 1</span> decays faster than fair,
+            <span className="font-mono-num"> α &lt; 1</span> fatter.
           </p>
         </div>
 
@@ -213,6 +254,60 @@ function Diag({ label, value, hint }: { label: string; value: string; hint?: str
       <p className="stat-label">{label}</p>
       <p className="mt-0.5 font-mono-num text-sm font-semibold">{value}</p>
       {hint && <p className="text-[9px] text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * The prior-data anchor: the seed/ corpus (91k past aviator rounds) is the
+ * estimate's evidence. The live E[X] is VALID when it sits near the prior mean
+ * (within ~30%), PENDING when the tape is still thin, and DRIFT when the live
+ * regime has genuinely moved away from the historical one — in which case the
+ * seed is context, not a target.
+ */
+function SeedEvidenceRow({ seed, ev }: { seed: SeedEvidence | null; ev: { full: number; n: number } }) {
+  if (!seed || !seed.found) {
+    return (
+      <div className="rounded border border-border/70 bg-secondary/30 px-2.5 py-1.5">
+        <p className="text-[10px] text-muted-foreground">
+          seed evidence — <span className="text-foreground/70">no corpus found</span> (live-tape estimate only)
+        </p>
+      </div>
+    );
+  }
+  const prior = seed.combined;
+  const ratio = prior.mean > 0 ? ev.full / prior.mean : 1;
+  const near = Math.abs(ratio - 1) <= 0.3;
+  const thin = ev.n < 200;
+  const verdict = near && !thin
+    ? { label: "VALID — near prior mean", tone: "#2bd97c" }
+    : thin
+      ? { label: "pending — tape still thin", tone: "#ffb020" }
+      : { label: `drift — live regime is ${ratio >= 1 ? "fatter" : "thinner"} than prior`, tone: "#38c7e8" };
+  return (
+    <div className="rounded border border-border/70 bg-secondary/30 px-2.5 py-2">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">seed evidence · prior data</p>
+        <span className="font-mono-num text-[10px] font-semibold" style={{ color: verdict.tone }}>{verdict.label}</span>
+      </div>
+      <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+        <div>
+          <p className="font-mono-num text-sm font-semibold">{fmtX(prior.mean)}×</p>
+          <p className="text-[9px] text-muted-foreground">prior mean · {prior.count.toLocaleString()} rounds</p>
+        </div>
+        <div>
+          <p className="font-mono-num text-sm font-semibold">{fmtX(prior.median)}×</p>
+          <p className="text-[9px] text-muted-foreground">prior median</p>
+        </div>
+        <div>
+          <p className="font-mono-num text-sm font-semibold">{fmtX(prior.max)}×</p>
+          <p className="text-[9px] text-muted-foreground">prior max (unlimited tail)</p>
+        </div>
+      </div>
+      <p className="mt-1.5 text-[9px] leading-relaxed text-muted-foreground">
+        {seed.corpora.join(" + ")} — validated: live E[X] {fmtX(ev.full)}× vs prior {fmtX(prior.mean)}×
+        (ratio {ratio.toFixed(2)}×). Prior p95 {fmtX(prior.p95)}×, p99 {fmtX(prior.p99)}×.
+      </p>
     </div>
   );
 }

@@ -16,8 +16,8 @@ from fastapi import (APIRouter, Body, FastAPI, File, Header, HTTPException, Quer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import (db, ev, fairness, ingest, math_models as mm, pipeline, randomness, strategies,
-               survival, watcher, windows)
+from . import (db, ev, fairness, ingest, math_models as mm, pipeline, randomness, seed as seed_evidence,
+               strategies, survival, watcher, windows)
 
 VERSION = "6.2.0"
 SEED_SERVER = "momento-demo-server-seed-2f9c41a7b6e5"
@@ -339,7 +339,8 @@ def get_rounds(limit: int = Query(default=2000, ge=1, le=5000),
     return {"rounds": rounds, "total": db.count_rounds(v)}
 
 
-def _arm_prediction(visitor: str, force: bool = False) -> Optional[Dict[str, Any]]:
+def _arm_prediction(visitor: str, force: bool = False,
+                    analysis: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Lock a committed forecast for the next round from the current tape.
 
     This used to happen only when a single round arrived, which meant a tape that
@@ -349,13 +350,16 @@ def _arm_prediction(visitor: str, force: bool = False) -> Optional[Dict[str, Any
     alone unless `force` is set, because re-locking would reset the commit time and
     let the forecast be silently revised after the fact, which is the one thing the
     ledger exists to prevent.
+
+    `analysis` is optional: when the caller (e.g. _ingest) just computed one for
+    the same tape, passing it avoids a second ~1.4s analyze of the same data.
     """
     if not force and db.open_prediction(visitor):
         return db.open_prediction(visitor)
     tape = _tape(visitor)
     if len(tape) < 10:
         return None
-    analysis = pipeline.analyze(tape)
+    analysis = analysis if analysis is not None else pipeline.analyze(tape)
     cands = pipeline.candidates(tape, analysis)
     if not cands:
         return None
@@ -375,7 +379,20 @@ def _arm_prediction(visitor: str, force: bool = False) -> Optional[Dict[str, Any
     })
 
 
-async def _ingest(visitor: str, multiplier: float, source: str) -> Dict[str, Any]:
+# Serialises ingest compute across its worker threads. The event loop is
+# otherwise blocked by the synchronous analyze + arm work done here, which
+# starves the WebSocket push that hands the new round to the panels — the
+# visible symptom was "forecast panels not updating on new rounds".
+_ingest_lock = asyncio.Lock()
+
+
+def _ingest_sync(visitor: str, multiplier: float, source: str) -> Dict[str, Any]:
+    """Synchronous ingest body — runs off the event loop (see _ingest).
+
+    Every step here is CPU-bound or disk-bound with no awaits, so it must not
+    run on the loop thread. The engine is check_same_thread=False and each
+    call opens its own short-lived session, which is why this is thread-safe.
+    """
     settings = db.get_settings(visitor)
     edge = settings["houseEdge"]
 
@@ -393,12 +410,26 @@ async def _ingest(visitor: str, multiplier: float, source: str) -> Dict[str, Any
         "eta": analysis["eta"]["estimated_crash_point"] if analysis else 0,
     })
 
-    # lock the next committed forecast (the open one was just resolved above)
-    locked = _arm_prediction(visitor, force=True) if analysis else None
+    # lock the next committed forecast (the open one was just resolved above).
+    # Pass the analysis we just computed: _arm_prediction used to re-run
+    # analyze on the same tape, doubling the per-round CPU cost.
+    locked = _arm_prediction(visitor, force=True, analysis=analysis) if analysis else None
 
-    payload = {"type": "round", "round": row, "resolved": resolved, "locked": locked,
-               "context": context, "alerts": fired,
-               "state": analysis["state"] if analysis else None}
+    return {"type": "round", "round": row, "resolved": resolved, "locked": locked,
+            "context": context, "alerts": fired,
+            "state": analysis["state"] if analysis else None}
+
+
+async def _ingest(visitor: str, multiplier: float, source: str) -> Dict[str, Any]:
+    """Ingest one round through the live pipeline, without blocking the loop.
+
+    The heavy synchronous body (analyze + candidates + arm) runs in a worker
+    thread; the event loop only awaits the broadcast. Concurrency: a per-
+    visitor lock keeps round ordering stable (a round must never resolve or
+    arm ahead of the one before it), while unrelated visitors stay parallel.
+    """
+    async with _ingest_lock:
+        payload = await asyncio.to_thread(_ingest_sync, visitor, multiplier, source)
     await hub.broadcast(visitor, payload)
     return payload
 
@@ -637,6 +668,16 @@ def get_forecast(x_visitor_id: Optional[str] = Header(default=None, alias="X-Vis
         c["fairProbability"] = ev.probability_above(lo, edge)
     return {"candidates": cands, "open": _arm_prediction(v),
             "fairPriceNote": "fairProbability is what an unbeatable game charges for that band"}
+
+
+@api.get("/seed")
+def get_seed_evidence() -> Dict[str, Any]:
+    """Prior-data evidence from the repo seed/ folder (avfs.db, momento.db).
+
+    Not the live tape: a large, stable reference distribution the forecast's
+    estimated value is validated against and anchored to. Read-only + cached.
+    """
+    return seed_evidence.load_seed_evidence()
 
 
 @api.get("/eta")
