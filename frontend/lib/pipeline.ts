@@ -129,6 +129,7 @@ export function transitionMatrix(labels: State[]): Record<State, Record<State, n
 }
 
 const round2 = (v: number) => Math.round(v * 1000) / 1000;
+const round3 = (v: number) => Math.round(v * 10000) / 10000;
 
 // ---------------------------------------------------------------------------
 // ladder pressure & ETA adjustment (forecast.py ladder_eta_adjustment)
@@ -511,10 +512,16 @@ export function fullForecast(survivalAt: (x: number) => number): FullForecast {
  * corpora do (~13x), which is the cross-validation the estimate is anchored on.
  */
 export interface ExpectedValue {
-  /** Arithmetic mean of the full tape = E[next round] under i.i.d. Unbounded: the tail is in. */
+  /** Arithmetic mean of the full tape — long-run anchor, kept for the seed-prior check. */
   full: number;
   /** Mean of the last 200 rounds — the current regime's estimate (drifts with the tape). */
   recent: number;
+  /** Mean of the last 600 rounds — the live E[next round] headline; same window as the calibrated quantiles. */
+  window: number;
+  /** Rounds actually in the 600-window (fewer on a young tape). */
+  windowN: number;
+  /** window − window(one round earlier): the per-round re-commit step of the headline. */
+  deltaPerRound: number;
   /** Rounds used for `full`. */
   n: number;
   /** Largest multiplier on the tape — the observed top of the unlimited range. */
@@ -523,7 +530,7 @@ export interface ExpectedValue {
 
 export function expectedValue(multipliers: number[]): ExpectedValue {
   const n = multipliers.length;
-  if (!n) return { full: 1, recent: 1, n: 0, max: 1 };
+  if (!n) return { full: 1, recent: 1, window: 1, windowN: 0, deltaPerRound: 0, n: 0, max: 1 };
   let sum = 0;
   let mx = 1;
   for (const m of multipliers) {
@@ -532,7 +539,26 @@ export function expectedValue(multipliers: number[]): ExpectedValue {
   }
   const recentWindow = multipliers.slice(-200);
   const recent = recentWindow.reduce((a, b) => a + b, 0) / recentWindow.length;
-  return { full: round2(sum / n), recent: round2(recent), n, max: mx };
+  // Window mean over the same 600 rounds the calibrated quantiles use — the
+  // live estimate. The whole-tape mean moves only (m - mean)/n per round
+  // (measured ±0.004x at n≈2,000): correct long-run, but its 1-decimal
+  // display can sit in one bucket for dozens of rounds and read as frozen.
+  const WINDOW = 600;
+  const win = multipliers.slice(-WINDOW);
+  const window = win.reduce((a, b) => a + b, 0) / win.length;
+  // The same window one round earlier: what the estimate was before this
+  // round dropped. The difference is the honest per-round re-commit step.
+  const prevWin = multipliers.length > WINDOW ? multipliers.slice(-WINDOW - 1, -1) : win;
+  const prevWindow = prevWin.reduce((a, b) => a + b, 0) / prevWin.length;
+  return {
+    full: round2(sum / n),
+    recent: round2(recent),
+    window: round2(window),
+    windowN: win.length,
+    deltaPerRound: round3(window - prevWindow),
+    n,
+    max: mx,
+  };
 }
 
 /**

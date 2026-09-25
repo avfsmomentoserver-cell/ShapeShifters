@@ -1,12 +1,15 @@
 /**
  * Full Forecast — the dedicated, prominent next-round forecast panel.
  *
- * The headline is the EXPECTED VALUE (arithmetic mean) of the next round over
- * the whole tape — the statistic that actually re-commits on every round and
- * carries the unlimited tail (a 55.98x jackpot is IN the number, not clamped
- * off a 20x scale). The 600-round-window median is the robust sub-mark: it is
- * measured to move 0.0000x per round, so it labels the center of gravity, not
- * the estimate.
+ * The headline is the EXPECTED VALUE over the last 600 rounds — the same
+ * window the calibrated quantiles use, so one number, one window, one story.
+ * It re-commits on every round and the per-round Δ is printed next to it.
+ * (The whole-tape mean was the headline before: at n≈2,000 it moves only
+ * (m − mean)/n ≈ 0.004× per round, so its 1-decimal display sat in one bucket
+ * for dozens of rounds and read as frozen at "10.4×" even while everything
+ * downstream re-committed. It remains below as the long-run anchor for the
+ * seed-prior validation.) The 600-round-window median is the robust sub-mark:
+ * measured to move 0.0000x per round, it labels the center of gravity.
  *
  * Everything else renders the whole calibrated next-round distribution: a
  * tight 50% interval (the IQR), a full 90% interval, a 98% envelope, the
@@ -122,17 +125,27 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
         {/* LEFT — expected value + unlimited range + robust sub-mark + seed evidence */}
         <div className="space-y-3">
           <div>
-            <p className="stat-label">next round — estimated value (E[X], unlimited range)</p>
+            <p className="stat-label">next round — estimated value (E[X], live window)</p>
             <div className="flex items-baseline gap-1.5">
               <AnimatedNumber
-                value={analysis.expectedValue.full}
+                key={lastAddedAt}
+                value={analysis.expectedValue.window}
                 format={(v) => `${fmtX(v)}×`}
-                className="font-mono-num text-5xl font-bold leading-none"
+                className="ticker-in font-mono-num text-5xl font-bold leading-none"
               />
+              <span
+                className="font-mono-num text-sm font-semibold"
+                style={{ color: analysis.expectedValue.deltaPerRound >= 0 ? "#2bd97c" : "#ff4d5e" }}
+              >
+                {analysis.expectedValue.deltaPerRound >= 0 ? "▲" : "▼"}
+                {Math.abs(analysis.expectedValue.deltaPerRound).toFixed(4)}
+              </span>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
+              mean of the last {analysis.expectedValue.windowN.toLocaleString()} rounds · re-commits every round
+              (Δ shown) ·
               state <span className="font-mono-num" style={{ color: colorFor(f.p50) }}>{analysis.state}</span> ·
-              median {fmtX(f.p50)}× (robust) · P(≥ EV) = the tail's own weight
+              median {fmtX(f.p50)}× (robust)
             </p>
           </div>
 
@@ -305,7 +318,7 @@ function SeedEvidenceRow({ seed, ev }: { seed: SeedEvidence | null; ev: { full: 
         </div>
       </div>
       <p className="mt-1.5 text-[9px] leading-relaxed text-muted-foreground">
-        {seed.corpora.join(" + ")} — validated: live E[X] {fmtX(ev.full)}× vs prior {fmtX(prior.mean)}×
+        {seed.corpora.join(" + ")} — validated: whole-tape E[X] {fmtX(ev.full)}× vs prior {fmtX(prior.mean)}×
         (ratio {ratio.toFixed(2)}×). Prior p95 {fmtX(prior.p95)}×, p99 {fmtX(prior.p99)}×.
       </p>
     </div>
