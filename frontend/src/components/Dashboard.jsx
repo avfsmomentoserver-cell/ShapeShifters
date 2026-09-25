@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import { Play, Pause, RefreshCw, Download, AlertTriangle, TrendingUp, BarChart3, Target } from 'lucide-react'
+import ForecastSummary from './ForecastSummary'
 import CurveShapeAnalyzer from './CurveShapeAnalyzer'
 import StreakDetector from './StreakDetector'
 import DryZonePredictor from './DryZonePredictor'
@@ -8,7 +9,7 @@ import MoonshotForecaster from './MoonshotForecaster'
 import ETAEstimator from './ETAEstimator'
 
 export default function Dashboard({ connectionStatus }) {
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTab] = useState('forecast')
   const [isAutoRefresh, setIsAutoRefresh] = useState(true)
   const [roundData, setRoundData] = useState([])
   const [currentMultiplier, setCurrentMultiplier] = useState(1.00)
@@ -71,7 +72,8 @@ export default function Dashboard({ connectionStatus }) {
   }
 
   const tabs = [
-    { id: 'overview', label: 'Overview', icon: BarChart3 },
+    { id: 'forecast', label: 'Forecast', icon: Target },
+    { id: 'overview', label: 'Live Chart', icon: BarChart3 },
     { id: 'shapes', label: 'Curve Shapes', icon: TrendingUp },
     { id: 'streaks', label: 'Streaks', icon: Play },
     { id: 'dry-zones', label: 'Dry Zones', icon: AlertTriangle },
@@ -81,6 +83,9 @@ export default function Dashboard({ connectionStatus }) {
 
   const renderContent = () => {
     switch (activeTab) {
+      case 'forecast':
+        return <ForecastSummary connectionStatus={connectionStatus} />
+      
       case 'overview':
         return (
           <div className="space-y-6">

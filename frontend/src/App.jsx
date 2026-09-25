@@ -1,19 +1,32 @@
 import { useState, useEffect } from 'react'
 import Dashboard from './components/Dashboard'
-import { Activity, TrendingUp, Clock, Zap } from 'lucide-react'
+import { TrendingUp, Clock } from 'lucide-react'
 
 function App() {
   const [connectionStatus, setConnectionStatus] = useState('connecting')
   const [lastUpdate, setLastUpdate] = useState(null)
 
   useEffect(() => {
-    // Simulate connection check
-    const timer = setTimeout(() => {
-      setConnectionStatus('connected')
+    // Check if backend is reachable
+    const checkConnection = async () => {
+      try {
+        const res = await fetch('/api/')
+        if (res.ok) {
+          setConnectionStatus('connected')
+        } else {
+          setConnectionStatus('demo')
+        }
+      } catch {
+        // Backend not running - use demo mode
+        setConnectionStatus('demo')
+      }
       setLastUpdate(new Date())
-    }, 1000)
+    }
 
-    return () => clearTimeout(timer)
+    checkConnection()
+    const interval = setInterval(checkConnection, 30000)
+
+    return () => clearInterval(interval)
   }, [])
 
   return (
@@ -27,8 +40,8 @@ function App() {
                 <TrendingUp className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-white">Crash Curve Analytics</h1>
-                <p className="text-xs text-slate-400">Shape-Based Forecasting Engine</p>
+                <h1 className="text-xl font-bold text-white">ShapeShifters</h1>
+                <p className="text-xs text-slate-400">Crash Curve Analytics & Forecasting Engine</p>
               </div>
             </div>
             
@@ -43,12 +56,15 @@ function App() {
               <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-xs font-medium ${
                 connectionStatus === 'connected' 
                   ? 'bg-green-500/20 text-green-400' 
+                  : connectionStatus === 'demo'
+                  ? 'bg-yellow-500/20 text-yellow-400'
                   : 'bg-yellow-500/20 text-yellow-400'
               }`}>
                 <div className={`w-2 h-2 rounded-full ${
-                  connectionStatus === 'connected' ? 'bg-green-400 live-indicator' : 'bg-yellow-400'
+                  connectionStatus === 'connected' ? 'bg-green-400 live-indicator' : 
+                  connectionStatus === 'demo' ? 'bg-yellow-400' : 'bg-yellow-400'
                 }`} />
-                <span>{connectionStatus === 'connected' ? 'Live' : 'Connecting...'}</span>
+                <span>{connectionStatus === 'connected' ? 'Live' : connectionStatus === 'demo' ? 'Demo Mode' : 'Connecting...'}</span>
               </div>
             </div>
           </div>
@@ -57,57 +73,13 @@ function App() {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6">
-        {/* Quick Stats Bar */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="stat-card flex items-center space-x-3">
-            <div className="bg-primary-500/20 p-3 rounded-lg">
-              <Activity className="w-5 h-5 text-primary-400" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-400">Active Patterns</p>
-              <p className="text-lg font-bold text-white">12</p>
-            </div>
-          </div>
-          
-          <div className="stat-card flex items-center space-x-3">
-            <div className="bg-crash-green/20 p-3 rounded-lg">
-              <TrendingUp className="w-5 h-5 text-crash-green" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-400">Success Rate</p>
-              <p className="text-lg font-bold text-white">73.4%</p>
-            </div>
-          </div>
-          
-          <div className="stat-card flex items-center space-x-3">
-            <div className="bg-crash-yellow/20 p-3 rounded-lg">
-              <Clock className="w-5 h-5 text-crash-yellow" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-400">Avg Round Time</p>
-              <p className="text-lg font-bold text-white">8.2s</p>
-            </div>
-          </div>
-          
-          <div className="stat-card flex items-center space-x-3">
-            <div className="bg-crash-purple/20 p-3 rounded-lg">
-              <Zap className="w-5 h-5 text-crash-purple" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-400">Moonshot Alert</p>
-              <p className="text-lg font-bold text-white">2 pending</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Dashboard */}
         <Dashboard connectionStatus={connectionStatus} />
       </main>
 
       {/* Footer */}
       <footer className="border-t border-slate-700/50 mt-8 py-4">
         <div className="container mx-auto px-4 text-center text-xs text-slate-500">
-          <p>Crash Curve Analytics v1.0 • Powered by Stochastic Modeling & Pattern Recognition</p>
+          <p>ShapeShifters v1.0 • Powered by Stochastic Modeling, Pareto Distributions, Markov Chains & Ensemble Forecasting</p>
         </div>
       </footer>
     </div>

@@ -76,11 +76,11 @@ class DatabaseConnector:
             conn.close()
     
     def _init_schema(self):
-        """Initialize database schema if not exists"""
+        """Initialize database schema if not exists. Safe for existing databases with different schemas."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Rounds table
+            # Rounds table - only create if it doesn't exist (existing DB may have different schema)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS rounds (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,7 +94,7 @@ class DatabaseConnector:
                 )
             """)
             
-            # Forecasts table
+            # Forecasts table - only create if it doesn't exist
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS forecasts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,11 +122,17 @@ class DatabaseConnector:
                 )
             """)
             
-            # Create indices for performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_rounds_timestamp ON rounds(timestamp)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_rounds_multiplier ON rounds(multiplier)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_forecasts_type ON forecasts(component_type)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(pattern_type)")
+            # Create indices safely (existing DB may have different column names)
+            for index_sql in [
+                "CREATE INDEX IF NOT EXISTS idx_rounds_timestamp ON rounds(timestamp)",
+                "CREATE INDEX IF NOT EXISTS idx_rounds_multiplier ON rounds(multiplier)",
+                "CREATE INDEX IF NOT EXISTS idx_forecasts_type ON forecasts(component_type)",
+                "CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(pattern_type)"
+            ]:
+                try:
+                    cursor.execute(index_sql)
+                except sqlite3.OperationalError:
+                    pass  # Column doesn't exist in existing schema, skip
     
     def insert_round(self, timestamp: float, multiplier: float, hash: str,
                     server_seed: str = "", client_seed: str = "", nonce: int = 0) -> int:
@@ -161,12 +167,12 @@ class DatabaseConnector:
         """Get all multipliers as numpy array"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            query = "SELECT multiplier FROM rounds ORDER BY timestamp DESC"
+            query = "SELECT multiplier FROM rounds ORDER BY id DESC"
             if limit:
                 query += f" LIMIT {limit}"
             cursor.execute(query)
             rows = cursor.fetchall()
-            return np.array([row['multiplier'] for row in rows])
+            return np.array([float(row['multiplier']) for row in rows])
     
     def get_recent_rounds(self, count: int = 100) -> List[Round]:
         """Get most recent rounds"""
