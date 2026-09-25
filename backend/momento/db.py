@@ -354,6 +354,15 @@ def count_rounds(visitor: str = DEFAULT_VISITOR) -> int:
         return int(s.query(func.count(Round.id)).filter(Round.visitor_id == visitor).scalar() or 0)
 
 
+def source_counts(visitor: str = DEFAULT_VISITOR) -> Dict[str, int]:
+    """Round count per source — lets the UI tell the file-watched feed from
+    generator or import rounds on the same tape."""
+    with SessionLocal() as s:
+        rows = s.query(Round.source, func.count(Round.id)).filter(
+            Round.visitor_id == visitor).group_by(Round.source).all()
+        return {src: int(n) for src, n in rows}
+
+
 def delete_round(round_id: int, visitor: str = DEFAULT_VISITOR) -> int:
     with SessionLocal() as s:
         n = s.query(Round).filter(Round.visitor_id == visitor, Round.id == round_id).delete()
@@ -379,6 +388,29 @@ def clear_rounds(visitor: str = DEFAULT_VISITOR) -> int:
         s.query(Prediction).filter(Prediction.visitor_id == visitor).delete()
         s.commit()
         return n
+
+
+def delete_rounds_by_source(source: str, visitor: str = DEFAULT_VISITOR) -> int:
+    """Remove every round with a given source.
+
+    Used to strip the generator's rounds out of a tape that is meant to be fed
+    only by the file watcher. Predictions are keyed to rounds by id, so any open
+    (unresolved) forecast that was armed against a removed round is dropped too
+    — it would otherwise target a hole in the tape. Resolved history is left
+    intact: ledger entries keep their measured outcomes.
+    """
+    with SessionLocal() as s:
+        removed_ids = [r.id for r in s.query(Round.id).filter(
+            Round.visitor_id == visitor, Round.source == source).all()]
+        s.query(Round).filter(Round.visitor_id == visitor, Round.source == source).delete()
+        if removed_ids:
+            s.query(Prediction).filter(
+                Prediction.visitor_id == visitor,
+                Prediction.actual.is_(None),
+                Prediction.target_round_id.in_(removed_ids),
+            ).delete()
+        s.commit()
+        return len(removed_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +615,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "maxRiskPerRound": 0.02,
     "sessionLossLimit": 0.15,
     "liveFeedIntervalMs": 2500,
-    "simulatorEnabled": True,
+    # Off by default: the live tape is fed by the ~/Downloads file watcher. The
+    # provably-fair generator is an opt-in source, and while it runs its rounds
+    # mix into the same tape as the file feed (see /sim/start).
+    "simulatorEnabled": False,
     "showResponsibleBanner": True,
     "theme": "phosphor",
     "confidenceFloor": 0.45,

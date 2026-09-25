@@ -34,7 +34,7 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastAddedAt, setLastAddedAt] = useState(0);
-  const [isLive, setIsLiveState] = useState(false);
+  const [simulatorRunning, setSimulatorRunning] = useState(false);
   const [conn, setConn] = useState<ConnState>("connecting");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [context, setContext] = useState<LiveContext | null>(null);
@@ -75,7 +75,7 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     mounted.current = true;
     void refresh();
     api.get<LiveContext>("/context").then(setContext).catch(() => undefined);
-    api.get<{ running: boolean }>("/sim/status").then((s) => setIsLiveState(s.running)).catch(() => undefined);
+    api.get<{ running: boolean }>("/sim/status").then((s) => setSimulatorRunning(s.running)).catch(() => undefined);
     return () => {
       mounted.current = false;
     };
@@ -128,7 +128,16 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
   }, [lastAddedAt, refresh, settings?.liveFeedIntervalMs]);
 
   const setIsLive = useCallback(async (next: boolean) => {
-    setIsLiveState(next);
+    // Guard: the generator is opt-in. The tape is normally fed by the file
+    // watcher alone, and a generator round mixed into it is exactly the
+    // "random rounds" the feed is supposed to avoid. The backend enforces
+    // simulatorEnabled too; this keeps the UI from even attempting a blocked
+    // start.
+    if (next && settings && !settings.simulatorEnabled) {
+      setError("generator disabled — enable it in Settings to mix generated rounds into the file feed");
+      return;
+    }
+    setSimulatorRunning(next);
     try {
       if (next) {
         const ms = settings?.liveFeedIntervalMs ?? 2500;
@@ -137,11 +146,10 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
         await api.post("/sim/stop");
       }
     } catch (e) {
-      setIsLiveState(!next);
-      setError(e instanceof Error ? e.message : "could not toggle the feed");
+      setSimulatorRunning(!next);
+      setError(e instanceof Error ? e.message : "could not toggle the generator");
     }
-  }, [settings?.liveFeedIntervalMs]);
-
+  }, [settings?.liveFeedIntervalMs, settings?.simulatorEnabled, settings]);
   const addManual = useCallback(async (value: number) => {
     await api.post("/rounds", { multiplier: value, source: "manual" });
   }, []);
@@ -163,6 +171,11 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     setTotal(0);
   }, []);
 
+  const purgeSimulator = useCallback(async () => {
+    await api.post<{ removed: number; total: number }>("/rounds/purge-simulator");
+    await refresh();
+  }, [refresh]);
+
   const saveSettings = useCallback(async (patch: Partial<Settings>) => {
     const res = await api.put<{ settings: Settings }>("/settings", patch);
     setSettings(res.settings);
@@ -171,13 +184,37 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
 
   const multipliers = useMemo(() => rounds.map((r) => r.m), [rounds]);
 
+  // The tape is live while it has moved recently — that is the honest "live feed"
+  // signal: the ~/Downloads watcher feeds it on its own cadence, independently of
+  // the generator. The tick re-evaluates the freshness window on a schedule that
+  // stops once the tape has been silent past it, so the status flips to paused
+  // without a permanent re-render timer.
+  const [feedTick, setFeedTick] = useState(0);
+  useEffect(() => {
+    if (!lastAddedAt) return;
+    const id = setInterval(() => {
+      if (Date.now() - lastAddedAt > 90_000) {
+        clearInterval(id);
+        return;
+      }
+      setFeedTick((t) => t + 1);
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [lastAddedAt]);
+  const liveFeedActive = useMemo(
+    () => lastAddedAt > 0 && Date.now() - lastAddedAt < 60_000,
+    [lastAddedAt, feedTick],
+  );
+
   return {
     rounds,
     multipliers,
     total,
     loading,
     error,
-    isLive,
+    isLive: simulatorRunning,
+    simulatorRunning,
+    liveFeedActive,
     setIsLive,
     conn,
     lastAddedAt,
@@ -185,6 +222,7 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     importRounds,
     resetToSeed,
     clearAll,
+    purgeSimulator,
     refresh,
     settings,
     saveSettings,

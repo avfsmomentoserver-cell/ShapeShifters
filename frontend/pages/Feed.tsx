@@ -40,10 +40,14 @@ interface SimStatus {
 }
 
 export default function Feed() {
-  const { rounds, total, isLive, setIsLive, conn, context, lastAddedAt, addManual, refresh } = useRounds();
+  const { rounds, total, simulatorRunning, setIsLive, settings, conn, context, lastAddedAt, addManual, refresh, purgeSimulator } = useRounds();
   const [entry, setEntry] = useState(2);
   const [busy, setBusy] = useState(false);
+  const [purging, setPurging] = useState(false);
   const sim = useApi<SimStatus>("/sim/status", { refetchInterval: 5_000 });
+  const sources = useApi<{ sources: Record<string, number> }>("/meta");
+  const simulatorCount = sources.data?.sources?.simulator ?? 0;
+  const generatorAllowed = !settings || settings.simulatorEnabled;
 
   const submit = async () => {
     if (!Number.isFinite(entry) || entry < 1) return;
@@ -55,14 +59,34 @@ export default function Feed() {
     }
   };
 
+  const purge = async () => {
+    setPurging(true);
+    try {
+      await purgeSimulator();
+    } finally {
+      setPurging(false);
+    }
+  };
+
   const tail = rounds.slice(-120).reverse();
 
   return (
     <>
       <PageHeader title="Live Feed" kicker={`socket ${conn} · ${total.toLocaleString()} rounds stored`}>
-        <Btn tone={isLive ? "danger" : "accent"} onClick={() => void setIsLive(!isLive)}>
-          {isLive ? "stop generator" : "start generator"}
+        <Btn
+          tone={simulatorRunning ? "danger" : "accent"}
+          onClick={() => void setIsLive(!simulatorRunning)}
+          disabled={!generatorAllowed && !simulatorRunning}
+        >
+          {!generatorAllowed && !simulatorRunning
+            ? "generator disabled"
+            : simulatorRunning ? "stop generator" : "start generator"}
         </Btn>
+        {simulatorCount > 0 && (
+          <Btn tone="danger" onClick={() => void purge()} disabled={purging}>
+            {purging ? "purging…" : `purge ${simulatorCount} generated`}
+          </Btn>
+        )}
         <Btn onClick={() => void refresh()}>refresh</Btn>
       </PageHeader>
 
@@ -86,7 +110,7 @@ export default function Feed() {
         ) : null}
 
         <Panel title="tape" right={<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">last 90 rounds</span>}>
-          {rounds.length > 2 ? <ScopeChart rounds={rounds} visible={90} /> : <Empty title="no rounds yet" body="Start the generator or add a round by hand." />}
+          {rounds.length > 2 ? <ScopeChart rounds={rounds} visible={90} /> : <Empty title="no rounds yet" body="The file watcher fills the tape automatically, or add a round by hand." />}
         </Panel>
 
         <Grid cols={2}>

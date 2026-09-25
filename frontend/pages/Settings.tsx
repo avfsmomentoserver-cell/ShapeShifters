@@ -170,7 +170,11 @@ export default function Settings() {
                     />
                   </Field>
                   <div className="space-y-2.5 pt-1">
-                    <Toggle on={d.simulatorEnabled} label="allow the generator to run" onChange={(v) => set("simulatorEnabled", v)} />
+                    <Toggle
+                      on={d.simulatorEnabled}
+                      label="allow the round generator (off by default — the live tape is fed by the file watcher)"
+                      onChange={(v) => set("simulatorEnabled", v)}
+                    />
                     <Toggle
                       on={d.showResponsibleBanner}
                       label="show the responsible-play banner"

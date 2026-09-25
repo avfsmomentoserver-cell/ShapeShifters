@@ -22,11 +22,12 @@ export function useAnalysis(): Analysis | null {
 }
 
 export function CommandCenter() {
-  const { rounds, multipliers, isLive, setIsLive, lastAddedAt } = useRounds();
+  const { rounds, multipliers, liveFeedActive, simulatorRunning, setIsLive, settings, lastAddedAt } = useRounds();
   const analysis = useAnalysis();
   const top = analysis ? candidates(multipliers, analysis).slice(0, 3) : [];
   const last = rounds[rounds.length - 1];
   const tone = last ? STATE_TONE[analysis?.state ?? "Normal"] : null;
+  const generatorAllowed = !settings || settings.simulatorEnabled;
 
   const last20 = multipliers.slice(-20);
   const hitRate2x = last20.length ? last20.filter((m) => m >= 2).length / last20.length : 0;
@@ -37,15 +38,23 @@ export function CommandCenter() {
       <div className="panel scanline relative overflow-hidden">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${isLive ? "bg-primary live-dot" : "bg-muted-foreground"}`} />
+            <span className={`h-2 w-2 rounded-full ${liveFeedActive ? "bg-primary live-dot" : "bg-muted-foreground"}`} />
             <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-              {isLive ? "Live feed" : "Paused"}
+              {liveFeedActive ? "Live feed · files" : "Feed paused"}
             </span>
             <button
-              onClick={() => setIsLive(!isLive)}
-              className="rounded border border-border px-2 py-0.5 text-[11px] text-foreground/80 transition-colors hover:border-primary hover:text-primary"
+              onClick={() => setIsLive(!simulatorRunning)}
+              disabled={!generatorAllowed && !simulatorRunning}
+              title={generatorAllowed ? "toggle the provably-fair round generator" : "disabled — enable the generator in Settings; the tape is fed by the file watcher"}
+              className={
+                !generatorAllowed && !simulatorRunning
+                  ? "cursor-not-allowed rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground/50"
+                  : simulatorRunning
+                    ? "rounded border border-destructive/50 px-2 py-0.5 text-[11px] text-destructive hover:bg-destructive/10"
+                    : "rounded border border-border px-2 py-0.5 text-[11px] text-foreground/80 transition-colors hover:border-primary hover:text-primary"
+              }
             >
-              {isLive ? "pause" : "resume"}
+              {simulatorRunning ? "stop generator" : "generator"}
             </button>
           </div>
           <div className="flex items-baseline gap-2">
@@ -72,7 +81,7 @@ export function CommandCenter() {
             <span className="font-mono-num text-sm">{rounds.length.toLocaleString()}</span>
           </div>
         </div>
-        {isLive && <div className="sweep pointer-events-none absolute bottom-0 left-0 h-px w-full" />}
+        {liveFeedActive && <div className="sweep pointer-events-none absolute bottom-0 left-0 h-px w-full" />}
       </div>
 
       {/* THE PREDICTOR */}

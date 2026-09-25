@@ -317,6 +317,7 @@ def meta(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id"
         "version": VERSION,
         "visitor": v,
         "rounds": db.count_rounds(v),
+        "sources": db.source_counts(v),
         "settings": db.get_settings(v),
         "edgePresets": ev.HOUSE_EDGE_PRESETS,
         "liveClients": hub.client_count(v),
@@ -1218,9 +1219,16 @@ async def sim_start(intervalMs: int = Query(default=2500, ge=400, le=60000),
                     x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
     v = visitor_of(x_visitor_id)
     _ensure_seeded(v)
+    settings = db.get_settings(v)
+    if not settings.get("simulatorEnabled", False):
+        raise HTTPException(409, (
+            "the generator is disabled: the live tape is fed by the file watcher. "
+            "Enable it in Settings (allow the generator to run) to mix generated "
+            "rounds into the feed."
+        ))
     if v in _sim_tasks and not _sim_tasks[v].done():
         return {"running": True, "already": True, **_sim_state[v]}
-    edge = db.get_settings(v)["houseEdge"]
+    edge = settings["houseEdge"]
     server_seed = secrets.token_hex(16)
     client_seed = f"momento-live-{random.randint(1000, 9999)}"
     _sim_state[v] = {"serverSeed": server_seed, "clientSeed": client_seed, "nonce": 0,
@@ -1239,6 +1247,21 @@ async def sim_stop(x_visitor_id: Optional[str] = Header(default=None, alias="X-V
     if task:
         task.cancel()
     return {"running": False, "state": _sim_state.get(v)}
+
+
+@api.post("/rounds/purge-simulator")
+def purge_simulator_rounds(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
+    """Strip generator-produced rounds out of the tape.
+
+    The live tape is meant to carry only file-watched rounds; while the
+    generator ran it mixed its (generated) rounds into the same sequence. This
+    removes them and drops any open forecast that targeted a removed round.
+    """
+    v = visitor_of(x_visitor_id)
+    removed = db.delete_rounds_by_source("simulator", v)
+    # re-arm on the cleaned tape so the open forecast reflects file-watched data
+    locked = _arm_prediction(v, force=True)
+    return {"removed": removed, "total": db.count_rounds(v), "locked": locked}
 
 
 @api.get("/sim/status")

@@ -91,11 +91,13 @@ function Ticker() {
 }
 
 function ConnBadge() {
-  const { conn, total, isLive } = useRounds();
-  const label = conn === "open" ? (isLive ? "live feed" : "connected") : conn === "connecting" ? "connecting" : "offline";
+  const { conn, total, liveFeedActive, simulatorRunning } = useRounds();
+  const label = conn === "open"
+    ? (simulatorRunning ? "live feed · generator" : liveFeedActive ? "live feed · files" : "connected")
+    : conn === "connecting" ? "connecting" : "offline";
   const tone =
     conn === "open"
-      ? isLive
+      ? (liveFeedActive || simulatorRunning)
         ? "border-accent/60 text-accent"
         : "border-border text-muted-foreground"
       : conn === "connecting"
@@ -103,7 +105,7 @@ function ConnBadge() {
         : "border-destructive/50 text-destructive";
   return (
     <div className={cn("flex items-center gap-2 rounded border px-2 py-1 text-[10px] uppercase tracking-[0.16em]", tone)}>
-      {conn === "open" && isLive ? <span className="live-dot" /> : null}
+      {conn === "open" && (liveFeedActive || simulatorRunning) ? <span className="live-dot" /> : null}
       <span>{label}</span>
       <span className="font-mono-num text-muted-foreground">{total.toLocaleString()} rds</span>
     </div>
@@ -172,7 +174,8 @@ function ResponsibleBanner() {
 export function AppShell() {
   const { pathname } = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const { isLive, setIsLive, error } = useRounds();
+  const { simulatorRunning, setIsLive, settings, error } = useRounds();
+  const generatorAllowed = !settings || settings.simulatorEnabled;
 
   useEffect(() => {
     setMobileOpen(false);
@@ -202,15 +205,19 @@ export function AppShell() {
           <CommandPalette />
           <ConnBadge />
           <button
-            onClick={() => void setIsLive(!isLive)}
+            onClick={() => void setIsLive(!simulatorRunning)}
+            disabled={!generatorAllowed && !simulatorRunning}
+            title={generatorAllowed ? "toggle the provably-fair round generator" : "disabled — enable the generator in Settings; the tape is fed by the file watcher"}
             className={cn(
               "rounded border px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] transition-colors",
-              isLive
-                ? "border-destructive/50 text-destructive hover:bg-destructive/10"
-                : "border-accent/60 text-accent hover:bg-accent/10",
+              !generatorAllowed && !simulatorRunning
+                ? "cursor-not-allowed border-border text-muted-foreground/50"
+                : simulatorRunning
+                  ? "border-destructive/50 text-destructive hover:bg-destructive/10"
+                  : "border-accent/60 text-accent hover:bg-accent/10",
             )}
           >
-            {isLive ? "stop feed" : "start feed"}
+            {simulatorRunning ? "stop generator" : "generator"}
           </button>
         </div>
       </header>

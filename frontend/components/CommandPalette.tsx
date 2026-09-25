@@ -26,7 +26,8 @@ export function CommandPalette() {
   const [q, setQ] = useState("");
   const [cursor, setCursor] = useState(0);
   const navigate = useNavigate();
-  const { isLive, setIsLive, refresh, resetToSeed, total } = useRounds();
+  const { simulatorRunning, setIsLive, refresh, resetToSeed, total, settings } = useRounds();
+  const generatorAllowed = !settings || settings.simulatorEnabled;
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
@@ -43,10 +44,17 @@ export function CommandPalette() {
     const actions: Item[] = [
       {
         id: "action:feed",
-        label: isLive ? "Stop the live feed" : "Start the live feed",
+        label: simulatorRunning
+          ? "Stop the round generator"
+          : generatorAllowed
+            ? "Start the round generator"
+            : "Start the round generator (disabled in Settings)",
         group: "Actions",
-        hint: isLive ? "simulator running" : `${total.toLocaleString()} rounds on the tape`,
-        run: () => void setIsLive(!isLive),
+        hint: simulatorRunning ? "generated rounds mixing into the file feed" : `${total.toLocaleString()} rounds on the tape · fed by the file watcher`,
+        run: () => {
+          if (!generatorAllowed) return;
+          void setIsLive(!simulatorRunning);
+        },
       },
       { id: "action:refresh", label: "Refresh the tape", group: "Actions", run: () => void refresh() },
       {
@@ -58,7 +66,7 @@ export function CommandPalette() {
       },
     ];
     return [...pages, ...actions];
-  }, [isLive, navigate, refresh, resetToSeed, setIsLive, total]);
+  }, [simulatorRunning, generatorAllowed, navigate, refresh, resetToSeed, setIsLive, total]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
