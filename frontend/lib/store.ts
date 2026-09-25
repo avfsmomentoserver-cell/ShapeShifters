@@ -43,6 +43,10 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
   const [total, setTotal] = useState(0);
   const mounted = useRef(true);
   const newestRef = useRef(0);
+  // Mirror of `total` for interval callbacks that must not re-arm on every
+  // total change (re-arming would reset the probe cadence mid-stream).
+  const totalRef = useRef(0);
+  totalRef.current = total;
 
   const refresh = useCallback(async () => {
     try {
@@ -100,35 +104,66 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     return stop;
   }, [refresh]);
 
+  // Catch-up after a socket outage. Frames lost while the proxy dropped the
+  // connection never re-arrive — the server has already broadcast them — so on
+  // reconnecting we must pull the tape once or the panels keep a hole (and a
+  // stale open forecast) until the next poll tick. Only a closed→open
+  // transition triggers this; the initial connecting→open would just duplicate
+  // the mount refresh. A silently dead socket (no close event, conn still
+  // "open") is covered by the /meta probe below instead.
+  const prevConn = useRef<ConnState>("connecting");
+  useEffect(() => {
+    const prev = prevConn.current;
+    prevConn.current = conn;
+    if (conn === "open" && prev === "closed") void refresh();
+  }, [conn, refresh]);
+
   // Activity-driven fallback. The hosted preview proxies plain HTTP reliably
   // but can drop websocket frames, which would leave the tape silently stale
   // while rounds keep arriving. The tape is fed by the watcher (external, on
   // its own cadence) even when the sim is OFF, so this cannot be gated on
   // isLive — that was exactly how the panels froze: sim off, WS frame dropped
-  // by the proxy, and no poll left to recover. Instead: poll as long as the
-  // tape has moved recently. The idle window used to be 45s, but the watcher's
-  // real cadence is one round every ~15-30 s (measured median 19.8 s): a single
-  // quiet stretch then silenced tape, context AND the open forecast until the
-  // next click. Poll for 3 minutes of silence before standing down; every new
-  // round re-arms the window via lastAddedAt (bumped by the WS push, refresh()
-  // and the ledger refetch path).
+  // by the proxy, and no poll left to recover.
+  //
+  // Two tiers, and the lower one never stops:
+  //  - fast poll (liveFeedIntervalMs) while the socket is degraded or the tape
+  //    is actively moving — this is the realtime path when frames are lost;
+  //  - a permanent light /meta probe (one tiny request) that escalates to a
+  //    full refresh the moment the server's round count differs from ours.
+  // The probe is the fix for a deadlock the old stand-down timer had: once the
+  // idle window expired, the poller stopped, and only a poll can notice a new
+  // round — so a single quiet stretch froze tape, context AND the open forecast
+  // until the next click. Worst-case staleness now is one probe interval.
   useEffect(() => {
     if (!lastAddedAt) return;
     const ms = Math.max(2000, settings?.liveFeedIntervalMs ?? 2500);
-    const idleMs = 180_000;
-    const stopAt = Date.now() + idleMs;
-    const id = setInterval(() => {
+
+    const tick = () => {
+      if (document.hidden) return; // nobody is watching; the probe still runs
       void refresh();
       api.get<LiveContext>("/context").then(setContext).catch(() => undefined);
-    }, ms);
-    const killer = setInterval(() => {
-      if (Date.now() > stopAt) clearInterval(id);
-    }, 1000);
-    return () => {
-      clearInterval(id);
-      clearInterval(killer);
     };
-  }, [lastAddedAt, refresh, settings?.liveFeedIntervalMs]);
+    const probe = async () => {
+      try {
+        const meta = await api.get<{ rounds: number }>("/meta");
+        if (meta.rounds !== totalRef.current) tick(); // tape moved — full refresh
+      } catch {
+        /* backend unreachable; the next probe retries */
+      }
+    };
+
+    const fast = setInterval(tick, conn === "open" ? Math.max(ms, 30_000) : ms);
+    const slow = setInterval(() => void probe(), 15_000);
+    const wake = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      clearInterval(fast);
+      clearInterval(slow);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, [lastAddedAt, refresh, settings?.liveFeedIntervalMs, conn]);
 
   const setIsLive = useCallback(async (next: boolean) => {
     // Guard: the generator is opt-in. The tape is normally fed by the file
