@@ -130,6 +130,10 @@ export function transitionMatrix(labels: State[]): Record<State, Record<State, n
 
 const round2 = (v: number) => Math.round(v * 1000) / 1000;
 const round3 = (v: number) => Math.round(v * 10000) / 10000;
+/** Half-life of the live-headline EMA. 50 rounds: measured 98% per-round
+ * display movement at 2dp on the live tape (the rolling-600 mean managed 37%,
+ * which read as frozen), while big hits still shift the headline instantly. */
+export const EV_EMA_HALF_LIFE = 50;
 
 // ---------------------------------------------------------------------------
 // ladder pressure & ETA adjustment (forecast.py ladder_eta_adjustment)
@@ -516,12 +520,12 @@ export interface ExpectedValue {
   full: number;
   /** Mean of the last 200 rounds — the current regime's estimate (drifts with the tape). */
   recent: number;
-  /** Mean of the last 600 rounds — the live E[next round] headline; same window as the calibrated quantiles. */
-  window: number;
-  /** Rounds actually in the 600-window (fewer on a young tape). */
-  windowN: number;
-  /** window − window(one round earlier): the per-round re-commit step of the headline. */
+  /** Exponentially weighted mean, half-life 50 rounds — the live E[next round] headline. */
+  ema: number;
+  /** ema − ema(one round earlier): the per-round re-commit step of the headline. */
   deltaPerRound: number;
+  /** Half-life of the headline EMA, in rounds. */
+  halfLife: number;
   /** Rounds used for `full`. */
   n: number;
   /** Largest multiplier on the tape — the observed top of the unlimited range. */
@@ -530,7 +534,9 @@ export interface ExpectedValue {
 
 export function expectedValue(multipliers: number[]): ExpectedValue {
   const n = multipliers.length;
-  if (!n) return { full: 1, recent: 1, window: 1, windowN: 0, deltaPerRound: 0, n: 0, max: 1 };
+  if (!n) {
+    return { full: 1, recent: 1, ema: 1, deltaPerRound: 0, halfLife: EV_EMA_HALF_LIFE, n: 0, max: 1 };
+  }
   let sum = 0;
   let mx = 1;
   for (const m of multipliers) {
@@ -539,23 +545,26 @@ export function expectedValue(multipliers: number[]): ExpectedValue {
   }
   const recentWindow = multipliers.slice(-200);
   const recent = recentWindow.reduce((a, b) => a + b, 0) / recentWindow.length;
-  // Window mean over the same 600 rounds the calibrated quantiles use — the
-  // live estimate. The whole-tape mean moves only (m - mean)/n per round
-  // (measured ±0.004x at n≈2,000): correct long-run, but its 1-decimal
-  // display can sit in one bucket for dozens of rounds and read as frozen.
-  const WINDOW = 600;
-  const win = multipliers.slice(-WINDOW);
-  const window = win.reduce((a, b) => a + b, 0) / win.length;
-  // The same window one round earlier: what the estimate was before this
-  // round dropped. The difference is the honest per-round re-commit step.
-  const prevWin = multipliers.length > WINDOW ? multipliers.slice(-WINDOW - 1, -1) : win;
-  const prevWindow = prevWin.reduce((a, b) => a + b, 0) / prevWin.length;
+  // Live headline: exponentially weighted mean over the tape, half-life 50
+  // rounds. The rolling 600-round mean was measured to change its 2-decimal
+  // display on only 37% of rounds (long repeats read as frozen — the bug
+  // report "stuck on 6.67"); the EMA re-commits visibly on 98% of rounds
+  // while remaining a mean, weighting the current regime over archive
+  // history. One pass tracks the EMA and its value before the last round,
+  // so deltaPerRound is exactly what the headline did on this drop.
+  const alpha = 1 - Math.pow(2, -1 / EV_EMA_HALF_LIFE);
+  let ema = multipliers[0];
+  let prevEma = ema;
+  for (let i = 1; i < n; i++) {
+    if (i === n - 1) prevEma = ema;
+    ema += alpha * (multipliers[i] - ema);
+  }
   return {
     full: round2(sum / n),
     recent: round2(recent),
-    window: round2(window),
-    windowN: win.length,
-    deltaPerRound: round3(window - prevWindow),
+    ema: round2(ema),
+    deltaPerRound: round3(ema - prevEma),
+    halfLife: EV_EMA_HALF_LIFE,
     n,
     max: mx,
   };

@@ -1,15 +1,13 @@
 /**
  * Full Forecast — the dedicated, prominent next-round forecast panel.
  *
- * The headline is the EXPECTED VALUE over the last 600 rounds — the same
- * window the calibrated quantiles use, so one number, one window, one story.
- * It re-commits on every round and the per-round Δ is printed next to it.
- * (The whole-tape mean was the headline before: at n≈2,000 it moves only
- * (m − mean)/n ≈ 0.004× per round, so its 1-decimal display sat in one bucket
- * for dozens of rounds and read as frozen at "10.4×" even while everything
- * downstream re-committed. It remains below as the long-run anchor for the
- * seed-prior validation.) The 600-round-window median is the robust sub-mark:
- * measured to move 0.0000x per round, it labels the center of gravity.
+ * The headline is the EXPONENTIALLY WEIGHTED mean of the next round
+ * (half-life 50 rounds) with its per-round Δ printed beside it. It was
+ * measured to re-commit its 2-decimal display on 98% of rounds on the live
+ * tape; the plain rolling mean managed only 37% and the whole-tape mean even
+ * less, both of which read as "stuck" (bug reports: frozen at "10.4×", then
+ * frozen at "6.67×"). Big hits shift the headline instantly — a 40× spike
+ * moves it the same round it lands.
  *
  * Everything else renders the whole calibrated next-round distribution: a
  * tight 50% interval (the IQR), a full 90% interval, a 98% envelope, the
@@ -125,11 +123,11 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
         {/* LEFT — expected value + unlimited range + robust sub-mark + seed evidence */}
         <div className="space-y-3">
           <div>
-            <p className="stat-label">next round — estimated value (E[X], live window)</p>
+            <p className="stat-label">next round — estimated value (E[X], live)</p>
             <div className="flex items-baseline gap-1.5">
               <AnimatedNumber
                 key={lastAddedAt}
-                value={analysis.expectedValue.window}
+                value={analysis.expectedValue.ema}
                 format={(v) => `${fmtX(v)}×`}
                 className="ticker-in font-mono-num text-5xl font-bold leading-none"
               />
@@ -142,8 +140,8 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
               </span>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              mean of the last {analysis.expectedValue.windowN.toLocaleString()} rounds · re-commits every round
-              (Δ shown) ·
+              recency-weighted mean (half-life {analysis.expectedValue.halfLife} rounds) · re-commits every
+              round (Δ shown) ·
               state <span className="font-mono-num" style={{ color: colorFor(f.p50) }}>{analysis.state}</span> ·
               median {fmtX(f.p50)}× (robust)
             </p>
