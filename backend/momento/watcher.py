@@ -14,7 +14,11 @@ Supported file shapes (any of these, per file or per line):
   JSON Lines (one JSON value per line)       — e.g. a live tail file
 
 Dedup: each file is tracked by (path, size, mtime); a growing file is
-re-read from the last byte offset, so appending never double-inserts.
+re-read from the last byte offset, so appending never double-inserts. A file
+is marked seen only AFTER its rounds are ingested, and every round carries
+the timestamp it claims — a re-ingest of the same file is skipped round-by-
+round on (multiplier, timestamp), so a crash between ingest and marking
+cannot duplicate anything and nothing is lost either.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -98,6 +103,29 @@ def _load_seen() -> None:
         log.warning("watcher: could not bootstrap seen-state: %s", exc)
 
 
+def _normalize_ts(value: Any) -> Optional[str]:
+    """Normalize a round timestamp to an ISO-8601 UTC string, or None.
+
+    The archive writes e.g. 2026-09-25T01:30:37.708Z; the tape stores ISO-8601
+    with an explicit +00:00 offset (datetime.isoformat of an aware value). Both
+    parse with datetime.fromisoformat after a Z→+00:00 swap, so store the
+    explicit-offset form. Naive stamps are treated as UTC. Unparseable stamps
+    return None and the caller falls back to ingest time.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def _extract_multipliers(value: Any) -> List[Dict[str, Any]]:
     """Normalise any supported JSON shape into a list of round dicts."""
     rounds: List[Dict[str, Any]] = []
@@ -161,8 +189,13 @@ def _parse_file(path: Path) -> List[Dict[str, Any]]:
     return rounds
 
 
-def _scan(watch_dir: Path) -> List[Tuple[Path, List[Dict[str, Any]]]]:
-    """Return (file, new_rounds) pairs for anything new or grown since last scan."""
+def _scan(watch_dir: Path) -> List[Tuple[Path, List[Dict[str, Any]], Tuple[int, float, int]]]:
+    """Return (file, new_rounds, seen_entry) for anything new or grown.
+
+    The caller applies the seen_entry only after the rounds are ingested; the
+    dedup in _ingest_rounds makes a re-scan of the same file a no-op, so a
+    crash between ingest and marking neither duplicates nor loses rounds.
+    """
     out: List[Tuple[Path, List[Dict[str, Any]]]] = []
     try:
         entries = sorted(watch_dir.iterdir())
@@ -181,9 +214,16 @@ def _scan(watch_dir: Path) -> List[Tuple[Path, List[Dict[str, Any]]]]:
         prev = _seen.get(key)
         if prev and prev[0] == size and prev[1] == mtime:
             continue  # unchanged
-        rounds = _parse_file(path)
-        if prev and rounds and prev[2] > 0:
-            # growing file: only take rounds appended after the last offset
+        if prev is None:
+            # New file: parse it whole. The mark is applied by run_watcher only
+            # after the rounds are ingested — marking here used to be the bug
+            # in reverse (new files were never marked at all, so every archive
+            # file was re-ingested on every poll), and marking before ingest
+            # would lose a round if the process died in between.
+            rounds = _parse_file(path)
+        else:
+            # Grown file: only the appended tail is new.
+            rounds = []
             try:
                 with path.open("r", encoding="utf-8", errors="replace") as fh:
                     fh.seek(prev[2])
@@ -199,12 +239,11 @@ def _scan(watch_dir: Path) -> List[Tuple[Path, List[Dict[str, Any]]]]:
                         continue
                 if appended:
                     rounds = appended
-            except OSError:
+            except OSError as exc:
+                log.warning("watcher: cannot read tail of %s: %s", path, exc)
                 rounds = []
-            _seen[key] = (size, mtime, size)
-            _seen_dirty = True
         if rounds:
-            out.append((path, rounds))
+            out.append((path, rounds, (size, mtime, size)))
     return out
 
 
@@ -215,6 +254,11 @@ async def _ingest_rounds(visitor: str, rounds: List[Dict[str, Any]]) -> int:
     (analyze + predict + broadcast) and a backlog of hundreds of rounds would
     otherwise wedge the loop — no WS messages, no HTTP, no "Application
     startup complete" — for minutes.
+
+    A round that already sits on the tape with the same (multiplier, timestamp)
+    is skipped, so re-reading a file can never duplicate rounds. The round's
+    own timestamp travels with it: stamping a re-ingested backlog with the
+    ingest clock made old rounds look freshly played.
     """
     from .api import _ingest  # local import to avoid a circular import at module load
 
@@ -223,7 +267,10 @@ async def _ingest_rounds(visitor: str, rounds: List[Dict[str, Any]]) -> int:
         m = round(r["multiplier"], 2)
         if m < 1.0:
             continue
-        await _ingest(visitor, m, SOURCE)
+        ts = _normalize_ts(r.get("timestamp"))
+        if ts and db.round_exists(m, ts, visitor):
+            continue
+        await _ingest(visitor, m, SOURCE, ts=ts)
         inserted += 1
         await asyncio.sleep(0)
     return inserted
@@ -238,10 +285,14 @@ async def run_watcher(visitor: str = db.DEFAULT_VISITOR,
     _load_seen()
     while True:
         try:
-            for path, rounds in _scan(directory):
+            for path, rounds, seen in _scan(directory):
                 n = await _ingest_rounds(visitor, rounds)
                 if n:
-                    log.info("watcher: ingested %d round(s) from %s", n, path.name)
+                    log.info("watcher: ingested %d new round(s) from %s", n, path.name)
+                # Mark only after ingest: an unmarked file is re-parsed next
+                # poll and deduped round-by-round, so nothing is lost or doubled.
+                _seen[str(path)] = seen
+                _seen_dirty = True
             if _seen_dirty:
                 _save_seen()
         except Exception:

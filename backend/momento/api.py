@@ -387,7 +387,8 @@ def _arm_prediction(visitor: str, force: bool = False,
 _ingest_lock = asyncio.Lock()
 
 
-def _ingest_sync(visitor: str, multiplier: float, source: str) -> Dict[str, Any]:
+def _ingest_sync(visitor: str, multiplier: float, source: str,
+                 ts: Optional[str] = None) -> Dict[str, Any]:
     """Synchronous ingest body — runs off the event loop (see _ingest).
 
     Every step here is CPU-bound or disk-bound with no awaits, so it must not
@@ -399,7 +400,7 @@ def _ingest_sync(visitor: str, multiplier: float, source: str) -> Dict[str, Any]
 
     # resolve the open committed forecast against reality BEFORE storing the round
     resolved = db.resolve_open_predictions(visitor, multiplier, strategies.realized_state(multiplier))
-    row = db.insert_round(multiplier, visitor, source=source)
+    row = db.insert_round(multiplier, visitor, source=source, ts=ts)
 
     tape = _tape(visitor)
     analysis = pipeline.analyze(tape) if len(tape) >= 10 else None
@@ -421,16 +422,18 @@ def _ingest_sync(visitor: str, multiplier: float, source: str) -> Dict[str, Any]
             "state": analysis["state"] if analysis else None}
 
 
-async def _ingest(visitor: str, multiplier: float, source: str) -> Dict[str, Any]:
+async def _ingest(visitor: str, multiplier: float, source: str,
+                  ts: Optional[str] = None) -> Dict[str, Any]:
     """Ingest one round through the live pipeline, without blocking the loop.
 
     The heavy synchronous body (analyze + candidates + arm) runs in a worker
     thread; the event loop only awaits the broadcast. Concurrency: a per-
     visitor lock keeps round ordering stable (a round must never resolve or
     arm ahead of the one before it), while unrelated visitors stay parallel.
+    `ts` carries the round's own timestamp when one is known (file watcher).
     """
     async with _ingest_lock:
-        payload = await asyncio.to_thread(_ingest_sync, visitor, multiplier, source)
+        payload = await asyncio.to_thread(_ingest_sync, visitor, multiplier, source, ts)
     await hub.broadcast(visitor, payload)
     return payload
 

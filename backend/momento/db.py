@@ -266,14 +266,39 @@ def _round_dict(r: Round) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def insert_round(multiplier: float, visitor: str = DEFAULT_VISITOR,
-                 source: str = "api", nonce: Optional[int] = None) -> Dict[str, Any]:
+                 source: str = "api", nonce: Optional[int] = None,
+                 ts: Optional[str] = None) -> Dict[str, Any]:
+    """Insert one round; `ts` (ISO-8601 UTC) carries the round's own timestamp.
+
+    The watcher passes the timestamp the round actually happened so a re-read
+    backlog cannot masquerade as fresh play; callers without a real timestamp
+    (manual entry, the generator) omit it and get the ingest clock.
+    """
+    stamp = ts or _now()
     with SessionLocal() as s:  # type: Session
-        row = Round(visitor_id=visitor, timestamp=_now(), multiplier=multiplier,
-                    band=band_for(multiplier), source=source, nonce=nonce, created_at=_now())
+        row = Round(visitor_id=visitor, timestamp=stamp, multiplier=multiplier,
+                    band=band_for(multiplier), source=source, nonce=nonce,
+                    created_at=_now())
         s.add(row)
         s.commit()
         s.refresh(row)
         return _round_dict(row)
+
+
+def round_exists(multiplier: float, ts: str,
+                 visitor: str = DEFAULT_VISITOR) -> bool:
+    """True when a round with this multiplier and timestamp is already stored.
+
+    Cheap identity check for file-fed rounds: the archive writes one file per
+    round with a millisecond timestamp, so (multiplier, timestamp) collides
+    between distinct rounds only by extraordinary coincidence.
+    """
+    with SessionLocal() as s:
+        return s.query(Round.id).filter(
+            Round.visitor_id == visitor,
+            Round.multiplier == multiplier,
+            Round.timestamp == ts,
+        ).first() is not None
 
 
 CADENCE_SECONDS = 20.0
