@@ -41,6 +41,7 @@ export interface LedgerEntry {
   brier: number | null; // Brier over the 5-state distribution
   bandHit: boolean | null; // actual landed inside the predicted band
   beat2: boolean | null; // actual >= 2x as predicted with pAbove2
+  eta: number | null; // expected crash point (×) at lock time
 }
 
 
@@ -78,6 +79,7 @@ export function usePredictionLedger() {
     brier: e.brier,
     bandHit: e.bandHit,
     beat2: e.hit2,
+    eta: e.eta,
   });
   const entries: LedgerEntry[] = (d?.entries ?? []).map(toEntry);
 

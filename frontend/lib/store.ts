@@ -106,13 +106,16 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
   // its own cadence) even when the sim is OFF, so this cannot be gated on
   // isLive — that was exactly how the panels froze: sim off, WS frame dropped
   // by the proxy, and no poll left to recover. Instead: poll as long as the
-  // tape has moved recently, and stop after 45s of silence so an idle app
-  // stops burning requests. Each new round re-arms the window via
-  // lastAddedAt (bumped by both the WS push and refresh()).
+  // tape has moved recently. The idle window used to be 45s, but the watcher's
+  // real cadence is one round every ~15-30 s (measured median 19.8 s): a single
+  // quiet stretch then silenced tape, context AND the open forecast until the
+  // next click. Poll for 3 minutes of silence before standing down; every new
+  // round re-arms the window via lastAddedAt (bumped by the WS push, refresh()
+  // and the ledger refetch path).
   useEffect(() => {
     if (!lastAddedAt) return;
     const ms = Math.max(2000, settings?.liveFeedIntervalMs ?? 2500);
-    const idleMs = 45_000;
+    const idleMs = 180_000;
     const stopAt = Date.now() + idleMs;
     const id = setInterval(() => {
       void refresh();

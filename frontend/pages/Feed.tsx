@@ -24,6 +24,7 @@ import {
   useApi,
 } from "@/components/kit";
 import { api } from "@/lib/api";
+import { usePredictionLedger } from "@/lib/ledger";
 import { useRounds } from "@/lib/store";
 
 interface SimStatus {
@@ -112,6 +113,8 @@ export default function Feed() {
         <Panel title="tape" right={<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">last 90 rounds</span>}>
           {rounds.length > 2 ? <ScopeChart rounds={rounds} visible={90} /> : <Empty title="no rounds yet" body="The file watcher fills the tape automatically, or add a round by hand." />}
         </Panel>
+
+        <NextRoundForecast />
 
         <Grid cols={2}>
           <Panel
@@ -218,5 +221,58 @@ export default function Feed() {
         </Panel>
       </div>
     </>
+  );
+}
+
+/**
+ * The next-round forecast, live on the Feed page. It is driven by the
+ * committed ledger — the server locks a new forecast against the next round
+ * the moment a round drops — so the strip re-commits on every dropped round
+ * (band, P(≥2×), P(≥10×), the per-round ETA to a 10× big hit, and the
+ * expected crash point). The ledger hook refetches on every tape movement.
+ */
+function NextRoundForecast() {
+  const { lastAddedAt, liveFeedActive } = useRounds();
+  const ledger = usePredictionLedger();
+  const open = ledger.open;
+  const last = ledger.entries.filter((e) => e.actual !== null).slice(-1)[0] ?? null;
+  const agoStamp = last ? new Date(last.lockedAt).toISOString() : null;
+
+  return (
+    <Panel
+      title="next round forecast"
+      note="Committed before the round lands and resolved after — the ledger, not a guess. Re-commits on every dropped round."
+      right={
+        <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground" key={lastAddedAt}>
+          <span className="ticker-in">{liveFeedActive ? "re-committed · live" : "committed"}</span>
+        </span>
+      }
+    >
+      {!open ? (
+        <Empty
+          title="no forecast committed yet"
+          body={ledger.loading ? "reading the ledger…" : "a forecast is locked automatically as soon as the tape has enough rounds."}
+        />
+      ) : (
+        <Grid cols={4} className="gap-2">
+          <Stat
+            label="target round"
+            value={`#${open.roundId}`}
+            sub={last ? `last: ${num(last.actual ?? 0)}× ${new Date(last.lockedAt).toLocaleTimeString()}` : undefined}
+          />
+          <Stat
+            label="target band"
+            value={`${open.band[0].toFixed(2)}–${open.band[1].toFixed(2)}×`}
+            sub={`${open.state} · P(hit) ${(open.probability * 100).toFixed(1)}%`}
+          />
+          <Stat label="P(≥2×)" value={pct(open.pAbove2)} sub={`P(≥10×) ${pct(open.pAbove10)}`} />
+          <Stat
+            label="expected crash point"
+            value={open.eta != null ? `${num(open.eta)}×` : "—"}
+            sub="engine ETA at lock time"
+          />
+        </Grid>
+      )}
+    </Panel>
   );
 }

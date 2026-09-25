@@ -70,6 +70,9 @@ export default function Dashboard() {
       </PageHeader>
 
       <div className="space-y-4">
+        {/* the next-round forecast leads the page: it re-commits on every dropped round */}
+        <CommandCenter />
+
         <Async query={summary} rows={3}>
           {(s) => (
             <Grid cols={4}>
@@ -155,8 +158,6 @@ export default function Dashboard() {
             {context.gamblersFallacyWarning}
           </div>
         ) : null}
-
-        <CommandCenter />
 
         <Panel title="what the numbers above are compared against">
           <p className="text-[11px] leading-relaxed text-muted-foreground">
