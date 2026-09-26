@@ -1,13 +1,11 @@
 /**
  * Full Forecast — the dedicated, prominent next-round forecast panel.
  *
- * The headline is the EXPONENTIALLY WEIGHTED mean of the next round
- * (half-life 50 rounds) with its per-round Δ printed beside it. It was
- * measured to re-commit its 2-decimal display on 98% of rounds on the live
- * tape; the plain rolling mean managed only 37% and the whole-tape mean even
- * less, both of which read as "stuck" (bug reports: frozen at "10.4×", then
- * frozen at "6.67×"). Big hits shift the headline instantly — a 40× spike
- * moves it the same round it lands.
+ * The headline is the DISTRIBUTION-BASED expected value of the next round,
+ * computed by integrating the survival curve: E[X] = ∫₀^∞ S(x) dx.
+ * This reflects the actual probability distribution shape rather than
+ * historical means, making it responsive to current distribution changes.
+ * The per-round Δ shows how the distribution shape is evolving.
  *
  * Everything else renders the whole calibrated next-round distribution: a
  * tight 50% interval (the IQR), a full 90% interval, a 98% envelope, the
@@ -140,7 +138,7 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
               </span>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              recency-weighted mean (half-life {analysis.expectedValue.halfLife} rounds) · re-commits every
+              {analysis.expectedValue.distributionBased ? "distribution-based (survival curve integration)" : `recency-weighted mean (half-life ${analysis.expectedValue.halfLife} rounds)`} · re-commits every
               round (Δ shown) ·
               state <span className="font-mono-num" style={{ color: colorFor(f.p50) }}>{analysis.state}</span> ·
               median {fmtX(f.p50)}× (robust)

@@ -163,6 +163,162 @@ export interface LiveContext {
   [k: string]: unknown;
 }
 
+/** One rung of the drawn shape: a survival probability at a magnitude. */
+export interface ShapePoint {
+  x: number;
+  p: number;
+}
+
+export interface ShapeEta {
+  threshold: number;
+  pReach: number;
+  eta: number;
+  ciLower: number;
+  ciUpper: number;
+  p90: number;
+  note?: string | null;
+}
+
+/** The "chart prediction": projected shape, realized overlay and ETAs. */
+export interface ShapeForecast {
+  horizon: number;
+  samples: number;
+  rounds: number;
+  window: number;
+  projected: ShapePoint[];
+  realized: (ShapePoint & { hits: number; samples: number })[];
+  fairPath: ShapePoint[];
+  eta: ShapeEta[];
+  shape: { family: string; r2: number; params: Record<string, number> };
+  families: Record<string, number>;
+  tailAlpha: number;
+  note: string;
+}
+
+/**
+ * The live projection: the cheap tier that re-commits on every round.
+ *
+ * `target` is a range with a median, never a single called number, and
+ * `allEtas` is the wait to each magnitude — the shape read as time.
+ */
+export interface RealtimeProjection {
+  label: string;
+  rounds: number;
+  window: number;
+  tailAlpha: number;
+  target: {
+    median: number;
+    p25: number;
+    p90: number;
+    [k: string]: number;
+  };
+  quantiles?: Record<string, number>;
+  allEtas?: Record<string, ShapeEta>;
+  costMs?: number;
+  context?: LiveContext;
+  [k: string]: unknown;
+}
+
+/** Freshness and cost of the scheduled heavy pass the projection sits on. */
+export interface RealtimeBaseline {
+  fresh: boolean;
+  rounds: number;
+  ageMs: number | null;
+  costMs: number;
+  verdict?: string | null;
+  payload?: Record<string, unknown>;
+}
+
+/** How far the live tier has drifted off the scheduled snapshot. */
+export interface RealtimeDelta {
+  roundsApart: number;
+  medianDrift: number;
+  tailAlphaDrift: number;
+  etaDrift10x: number;
+  moved: boolean;
+}
+
+/** `GET /api/stats/realtime` — the two tiers plus the delta that layers them. */
+export interface RealtimeSummary {
+  realtime: RealtimeProjection;
+  baseline: RealtimeBaseline;
+  delta: RealtimeDelta;
+  revision: number;
+  composed: boolean;
+  note: string;
+  multiTimeframe?: MultiTimeframeData;
+}
+
+/** Multi-timeframe stacked prediction data */
+export interface MultiTimeframeData {
+  available: boolean;
+  stackedTarget: {
+    median: number;
+    p25: number;
+    p90: number;
+  };
+  large: {
+    available: boolean;
+    target?: {
+      median: number;
+      p25: number;
+      p90: number;
+    };
+    rounds: number;
+    ageMs: number | null;
+  };
+  medium: {
+    available: boolean;
+    target?: {
+      median: number;
+      p25: number;
+      p90: number;
+    };
+    rounds: number;
+    ageMs: number | null;
+  };
+  current: {
+    available: boolean;
+    target: {
+      median: number;
+      p25: number;
+      p90: number;
+    };
+    rounds: number;
+  };
+}
+
+export interface AiSummarySection {
+  headline?: string | null;
+  body?: string[];
+  watch?: string[];
+  [k: string]: unknown;
+}
+
+/** `GET /api/stats/ai-summary` — the Entrim-written overall summary. */
+export interface AiSummary {
+  available: boolean;
+  reason?: string;
+  model?: string;
+  elapsedMs?: number;
+  rounds?: number;
+  revision?: number;
+  summary?: AiSummarySection | null;
+  headline?: string | null;
+  text?: string;
+  guard?: { passed: boolean; violations: { phrase: string; why: string }[] };
+  cached?: boolean;
+}
+
+/** `GET /api/stats/ai-status` — configuration only, never the key. */
+export interface AiStatus {
+  available: boolean;
+  configured: boolean;
+  baseUrl: string;
+  model: string;
+  cacheTtlMs: number;
+}
+
 export interface PredictionEntry {
   id: number;
   targetRoundId: number | null;
@@ -244,5 +400,14 @@ export type LiveMessage =
       context: LiveContext;
       alerts: AlertEventRow[];
       state: string | null;
+      /**
+       * The realtime projection riding on the round, so a panel can update the
+       * instant the frame lands instead of waiting for the next poll. Optional
+       * because an older server, or a frame from before the two-tier layer, may
+       * not carry it.
+       */
+      realtime?: RealtimeProjection;
+      baseline?: RealtimeBaseline;
+      revision?: number;
     }
   | { type: "bulk"; inserted: number; total: number };

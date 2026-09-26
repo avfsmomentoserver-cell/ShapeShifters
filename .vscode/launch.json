@@ -1,0 +1,48 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend: uvicorn (momento.api)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["momento.api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "cwd": "${workspaceFolder}/backend",
+      "python": "${workspaceFolder}/backend/.venv/bin/python",
+      "justMyCode": false
+    },
+    {
+      "name": "Frontend: Vite in Chrome",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend",
+      "sourceMapPathOverrides": {
+        "/*": "${webRoot}/*"
+      }
+    },
+    {
+      "name": "Frontend: Vite in Edge",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend"
+    },
+    {
+      "name": "Backend: pytest (current file)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-q"],
+      "cwd": "${workspaceFolder}/backend",
+      "justMyCode": false
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full stack (API + Chrome)",
+      "configurations": ["Backend: uvicorn (momento.api)", "Frontend: Vite in Chrome"],
+      "stopAll": true
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  // Project config for Devin CLI. Only `permissions`, `read_config_from` and
+  // `hooks` are valid in a project config; anything else belongs in
+  // ~/.config/devin/config.json. See docs/ai/runbook.md §"Agent tooling".
+  "permissions": {
+    "allow": [
+      // Reading is always safe here.
+      "Read(**)",
+      // Writes anywhere in the repo. The glob goes *inside* the parentheses —
+      // `Write(frontend)/**` is not a valid matcher and silently grants nothing.
+      // A bare `Write(**)` is resolved relative to the project root, so paths
+      // outside the workspace still prompt; the specific denies below carve
+      // out the secrets and user data.
+      "Write(**)",
+      // The documented commands in AGENTS.md §3.
+      "Exec(git status)",
+      "Exec(git diff)",
+      "Exec(git log)",
+      "Exec(git show)",
+      "Exec(git branch)",
+      "Exec(npm)",
+      "Exec(npx)",
+      "Exec(node)",
+      "Exec(python)",
+      "Exec(python3)",
+      "Exec(pip)",
+      "Exec(pytest)",
+      "Exec(bash scripts/)",
+      "Exec(ls)",
+      "Exec(cat)",
+      "Exec(which)"
+    ],
+    "ask": [
+      // Mutating git operations stay human-approved: the repo's commit style
+      // requires a measured problem statement and a `Verified:` line.
+      "Exec(git commit)",
+      "Exec(git push)",
+      "Exec(git checkout)",
+      "Exec(git reset)",
+      "Exec(git clean)",
+      "Exec(git rebase)",
+      "Exec(git merge)",
+      "Exec(git rm)",
+      "Exec(git mv)",
+      "Exec(npm publish)",
+      "Exec(npm install)",
+      "Exec(pip install)",
+      // Deleting the database destroys the tape; make it deliberate.
+      "Exec(rm)",
+      "Write(package.json)",
+      "Write(package-lock.json)"
+    ],
+    "deny": [
+      "Exec(sudo)",
+      "Exec(rm -rf)",
+      "Exec(git push --force)",
+      "Exec(curl)",
+      "Exec(wget)",
+      "Write(.env*)",
+      "Write(**/.env*)",
+      "Write(**/*.pem)",
+      "Write(**/*.key)",
+      "Write(**/momento.db*)",
+      "Write(**/watcher_seen.json)",
+      "Write(seed/**)"
+    ]
+  },
+  "read_config_from": {
+    "agents_standard": true,
+    "cursor": true,
+    "claude": true,
+    "windsurf": true,
+    "copilot": true,
+    "opencode": false,
+    "zed": false
+  }
+}

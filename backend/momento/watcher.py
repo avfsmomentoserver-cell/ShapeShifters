@@ -280,6 +280,11 @@ async def run_watcher(visitor: str = db.DEFAULT_VISITOR,
                       watch_dir: Optional[str] = None,
                       poll_seconds: float = POLL_SECONDS) -> None:
     """Background task: poll the watch directory and ingest new rounds."""
+    # `_seen_dirty` is assigned below; without this declaration Python treats it
+    # as a loop-local and the read on the next line raises UnboundLocalError on
+    # every poll that ingests nothing — which is every poll. The whole watcher
+    # then sits inside its `except`, scanning and re-parsing forever.
+    global _seen_dirty
     directory = Path(watch_dir or os.environ.get("MOMENTO_WATCH_DIR") or DEFAULT_DIR).expanduser()
     log.info("watcher: watching %s for new rounds (visitor=%s)", directory, visitor)
     _load_seen()

@@ -22,7 +22,7 @@ export function useAnalysis(): Analysis | null {
 }
 
 export function CommandCenter() {
-  const { rounds, multipliers, liveFeedActive, simulatorRunning, setIsLive, settings, lastAddedAt } = useRounds();
+  const { rounds, multipliers, liveFeedActive, simulatorRunning, setIsLive, settings, lastAddedAt, multiTimeframe } = useRounds();
   const analysis = useAnalysis();
   const top = analysis ? candidates(multipliers, analysis).slice(0, 3) : [];
   const last = rounds[rounds.length - 1];
@@ -31,6 +31,9 @@ export function CommandCenter() {
 
   const last20 = multipliers.slice(-20);
   const hitRate2x = last20.length ? last20.filter((m) => m >= 2).length / last20.length : 0;
+  
+  // Use stacked multi-timeframe target when available, fallback to analysis target
+  const displayTarget = multiTimeframe?.available ? multiTimeframe.stackedTarget : (analysis?.target ?? null);
 
   return (
     <div className="space-y-3">
@@ -139,13 +142,16 @@ export function CommandCenter() {
               <div className="space-y-3">
                 <div className="flex items-baseline gap-3">
                   <AnimatedNumber
-                    value={analysis.target.median}
+                    value={displayTarget?.median ?? analysis.target.median}
                     format={(v) => `${v.toFixed(2)}×`}
                     className="stat-value"
                   />
                   <span className="text-xs text-muted-foreground">
-                    p25 {analysis.target.p25.toFixed(2)} – p90 {analysis.target.p90.toFixed(2)}×
+                    p25 {(displayTarget?.p25 ?? analysis.target.p25).toFixed(2)} – p90 {(displayTarget?.p90 ?? analysis.target.p90).toFixed(2)}×
                   </span>
+                  {multiTimeframe?.available && (
+                    <span className="text-[10px] text-accent">· multi-timeframe</span>
+                  )}
                 </div>
                 <div className="relative h-2 overflow-hidden rounded-full bg-secondary">
                   <div
@@ -153,13 +159,16 @@ export function CommandCenter() {
                     style={{
                       background: "#38c7e8",
                       boxShadow: "0 0 8px #38c7e888",
-                      left: `${clamp(((analysis.target.p25 - 1) / 9) * 100, 0, 95)}%`,
-                      width: `${clamp(((analysis.target.p90 - analysis.target.p25) / 9) * 100, 3, 100)}%`,
+                      left: `${clamp((((displayTarget?.p25 ?? analysis.target.p25) - 1) / 9) * 100, 0, 95)}%`,
+                      width: `${clamp((((displayTarget?.p90 ?? analysis.target.p90) - (displayTarget?.p25 ?? analysis.target.p25)) / 9) * 100, 3, 100)}%`,
                     }}
                   />
                 </div>
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  Median of the calibrated next-round curve (empirical bulk + Hill tail, last 600 rounds) · tail index α = {analysis.tailAlpha.toFixed(2)} — a fair tape sits at 1.0.
+                  {multiTimeframe?.available 
+                    ? "Stacked multi-timeframe target (large 5k + medium 2k + current 600 windows) · forex-style analysis" 
+                    : `Median of the calibrated next-round curve (empirical bulk + Hill tail, last 600 rounds) · tail index α = ${analysis.tailAlpha.toFixed(2)} — a fair tape sits at 1.0.`
+                  }
                 </p>
               </div>
             ) : <p className="text-xs text-muted-foreground">warming up…</p>}

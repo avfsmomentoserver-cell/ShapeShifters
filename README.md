@@ -50,7 +50,7 @@ and (when available) a websocket. `base` is `"./"` so the bundle works from a su
 ### Tests
 
 ```bash
-cd backend && python -m pytest tests -q     # 34 tests
+cd backend && python -m pytest tests -q     # 176 tests, ~17 s
 ```
 
 `tests/test_reality_checks.py` checks the crash identities in closed form — the

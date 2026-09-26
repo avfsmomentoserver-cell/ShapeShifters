@@ -74,14 +74,13 @@ export const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
 
 function Ticker() {
   const { rounds } = useRounds();
-  const tail = rounds.slice(-22);
+  const tail = rounds.slice(-8).reverse();
   if (tail.length < 2) return null;
-  const row = [...tail, ...tail];
   return (
-    <div className="relative hidden w-full max-w-xs overflow-hidden border-x border-border/60 md:block" aria-hidden>
-      <div className="flex w-max animate-[marquee_28s_linear_infinite] gap-4 py-0.5">
-        {row.map((r, i) => (
-          <span key={`${r.id}-${i}`} className="font-mono-num text-xs" style={{ color: colorFor(r.m) }}>
+    <div className="relative hidden w-full max-w-xs overflow-x-auto border-x border-border/60 md:block" aria-hidden>
+      <div className="flex gap-3 py-0.5">
+        {tail.map((r) => (
+          <span key={r.id} className="font-mono-num text-xs whitespace-nowrap" style={{ color: colorFor(r.m) }}>
             {r.m.toFixed(2)}×
           </span>
         ))}

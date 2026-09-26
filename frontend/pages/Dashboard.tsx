@@ -5,6 +5,8 @@
 import { Link } from "react-router-dom";
 
 import { CommandCenter } from "@/components/CommandCenter";
+import { AiSummaryPanel } from "@/components/AiSummaryPanel";
+import { RealtimeLayerCard } from "@/components/RealtimeLayerCard";
 import { SourceDownloadButton } from "@/components/SourceDownload";
 import {
   Async,
@@ -72,6 +74,12 @@ export default function Dashboard() {
       <div className="space-y-4">
         {/* the next-round forecast leads the page: it re-commits on every dropped round */}
         <CommandCenter />
+
+        {/* the two-tier live layer underneath that forecast, made auditable */}
+        <RealtimeLayerCard />
+
+        {/* the overall write-up across every metric the two tiers publish */}
+        <AiSummaryPanel />
 
         <Async query={summary} rows={3}>
           {(s) => (

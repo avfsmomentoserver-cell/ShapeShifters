@@ -1,5 +1,13 @@
 # Dependencies
 node_modules/
+# Python virtualenvs. `.vscode/settings.json` and `.vscode/launch.json` pin the
+# interpreter to `backend/.venv`, so the env is expected to exist and must never
+# be committed. `venv/` is the older path and is ignored too so a stray one
+# cannot be staged by accident.
+venv/
+.venv/
+env/
+ENV/
 __pycache__/
 *.pyc
 *.pyo
@@ -36,7 +44,12 @@ frontend/dist/
 frontend/package-lock.json
 
 # IDE
-.vscode/
+# `.vscode/*` rather than `.vscode/`: a trailing-slash pattern excludes the
+# directory itself, and git will not re-include a file whose parent directory is
+# excluded — so the `!` rules below silently did nothing and NONE of the shared
+# workspace config was ever tracked. The glob form excludes the contents while
+# leaving the negations working.
+.vscode/*
 .idea/
 *.swp
 *.swo
@@ -66,3 +79,14 @@ data_backup/
 # Devin
 .devin/config.local.json
 .devin/mcp_config.local.json
+
+# Personal AI rules (kept local on purpose)
+AGENTS.local.md
+CLAUDE.local.md
+
+# Shared IDE/AI config: .vscode/ is ignored above, but these files are part of
+# the project's AI setup and are tracked deliberately.
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json

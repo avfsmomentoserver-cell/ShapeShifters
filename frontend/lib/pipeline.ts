@@ -324,7 +324,7 @@ export function analyze(multipliers: number[]): Analysis {
     survivalAt,
     target: targetForecast(survivalAt),
     forecast: fullForecast(survivalAt),
-    expectedValue: expectedValue(multipliers),
+    expectedValue: expectedValue(multipliers, survivalAt),
     tailAlpha: tail.alpha,
     hitEtas,
     bandHitEtas: hitBandEtas(survivalAt),
@@ -520,19 +520,27 @@ export interface ExpectedValue {
   full: number;
   /** Mean of the last 200 rounds — the current regime's estimate (drifts with the tape). */
   recent: number;
-  /** Exponentially weighted mean, half-life 50 rounds — the live E[next round] headline. */
+  /** Distribution-based combined mean — the live E[next round] headline. */
   ema: number;
   /** ema − ema(one round earlier): the per-round re-commit step of the headline. */
   deltaPerRound: number;
-  /** Half-life of the headline EMA, in rounds. */
+  /** Half-life of the headline EMA, in rounds (if using EMA). */
   halfLife: number;
   /** Rounds used for `full`. */
   n: number;
   /** Largest multiplier on the tape — the observed top of the unlimited range. */
   max: number;
+  /** Whether this is distribution-based (survival curve integration) or EMA-based. */
+  distributionBased?: boolean;
+  /** Component breakdown when distribution-based. */
+  components?: {
+    empirical: number;
+    distribution: number;
+    pressure: number;
+  };
 }
 
-export function expectedValue(multipliers: number[]): ExpectedValue {
+export function expectedValue(multipliers: number[], survivalAt?: (x: number) => number): ExpectedValue {
   const n = multipliers.length;
   if (!n) {
     return { full: 1, recent: 1, ema: 1, deltaPerRound: 0, halfLife: EV_EMA_HALF_LIFE, n: 0, max: 1 };
@@ -545,13 +553,62 @@ export function expectedValue(multipliers: number[]): ExpectedValue {
   }
   const recentWindow = multipliers.slice(-200);
   const recent = recentWindow.reduce((a, b) => a + b, 0) / recentWindow.length;
-  // Live headline: exponentially weighted mean over the tape, half-life 50
-  // rounds. The rolling 600-round mean was measured to change its 2-decimal
-  // display on only 37% of rounds (long repeats read as frozen — the bug
-  // report "stuck on 6.67"); the EMA re-commits visibly on 98% of rounds
-  // while remaining a mean, weighting the current regime over archive
-  // history. One pass tracks the EMA and its value before the last round,
-  // so deltaPerRound is exactly what the headline did on this drop.
+  
+  // Use distribution-based EV if survival function is provided
+  if (survivalAt) {
+    const window = multipliers.slice(-600);
+    
+    // 1. Empirical mean (50% weight)
+    const empiricalMean = window.reduce((a, b) => a + b, 0) / window.length;
+    
+    // 2. Distribution-weighted mean using survival curve (30% weight)
+    const maxX = Math.min(50, Math.max(...window) * 2);
+    const steps = 500;
+    const dx = maxX / steps;
+    let integral = 0;
+    for (let i = 0; i < steps; i++) {
+      const x = (i + 0.5) * dx;
+      integral += survivalAt(x) * dx;
+    }
+    const distributionMean = integral;
+    
+    // 3. Pressure-adjusted mean (20% weight)
+    const pressureWeights = window.map(m => {
+      if (m <= 2.0) return 1.0;
+      if (m <= 5.0) return 0.8;
+      if (m <= 10.0) return 0.6;
+      if (m <= 20.0) return 0.4;
+      return 0.2;
+    });
+    const pressureMean = window.reduce((sum, m, i) => sum + m * pressureWeights[i], 0) / 
+                        pressureWeights.reduce((sum, w) => sum + w, 0);
+    
+    // Combined weighted expected value
+    const combinedEv = (empiricalMean * 0.5) + (distributionMean * 0.3) + (pressureMean * 0.2);
+    
+    // Track previous value for delta
+    const prevEv = (expectedValue as any)._prevEv ?? 1;
+    const delta = combinedEv - prevEv;
+    (expectedValue as any)._prevEv = combinedEv;
+    
+    return {
+      full: sum / n,
+      recent,
+      ema: combinedEv,
+      deltaPerRound: delta,
+      halfLife: EV_EMA_HALF_LIFE,
+      n,
+      max: mx,
+      distributionBased: true,
+      components: {
+        empirical: round2(empiricalMean),
+        distribution: round2(distributionMean),
+        pressure: round2(pressureMean),
+      },
+    };
+  }
+  
+  // Fallback to EMA if no survival function
   const alpha = 1 - Math.pow(2, -1 / EV_EMA_HALF_LIFE);
   let ema = multipliers[0];
   let prevEma = ema;
@@ -567,6 +624,7 @@ export function expectedValue(multipliers: number[]): ExpectedValue {
     halfLife: EV_EMA_HALF_LIFE,
     n,
     max: mx,
+    distributionBased: false,
   };
 }
 

@@ -5,6 +5,7 @@ import asyncio
 import csv
 import io
 import json
+import os
 import random
 import secrets
 import threading
@@ -16,12 +17,51 @@ from fastapi import (APIRouter, Body, FastAPI, File, Header, HTTPException, Quer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import (db, ev, fairness, ingest, math_models as mm, pipeline, randomness, seed as seed_evidence,
-               strategies, survival, watcher, windows)
+from . import (ai_summary, db, ev, fairness, ingest, math_models as mm, pipeline, randomness,
+               realtime, seed as seed_evidence, strategies, survival, watcher, windows)
 
 VERSION = "6.2.0"
 SEED_SERVER = "momento-demo-server-seed-2f9c41a7b6e5"
 SEED_CLIENT = "momento-demo-client"
+
+
+# The realtime layer splits its work by cost: a scheduled, cached heavy pass
+# (randomness battery, earned skill, phases, window odds) and a cheap per-round
+# projection on top of it. The scheduler below is the only thing that keeps the
+# heavy tier *fresh*; `realtime.summary`/`advance` compute it once on demand so
+# a cold workspace is never empty either.
+BASELINE_INTERVAL_MS = int(os.environ.get("MOMENTO_BASELINE_INTERVAL_MS", "20000"))
+_BASELINE_TASK: Optional[asyncio.Task] = None
+
+
+async def _baseline_loop() -> None:
+    """Refresh the expensive tier for every visitor that has been seen.
+
+    Runs in a worker thread because the battery is seconds of NumPy and an
+    `await`-free body on the loop thread is exactly the outage this repository
+    has already suffered once. Failures are swallowed per visitor: a broken
+    heavy pass must never take down the live feed that feeds the cheap tier.
+    """
+    while True:
+        await asyncio.sleep(BASELINE_INTERVAL_MS / 1000)
+        try:
+            visitors = list(_SEEDED)
+            for v in visitors:
+                if hub.client_count(v) == 0:
+                    # Nothing is watching: skip the cost. The projection is
+                    # recomputed on demand the moment someone returns.
+                    continue
+                tape = await asyncio.to_thread(db.multipliers_for, v, 4000)
+                rows = await asyncio.to_thread(db.recent_rounds, 1000, v)
+                edge = (await asyncio.to_thread(db.get_settings, v))["houseEdge"]
+                await asyncio.to_thread(realtime.run_baseline, v, tape, edge, rows)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A scheduler that dies silently is worse than one that logs and
+            # retries; there is no logger wired up here, so the loop simply
+            # continues and the next tick retries.
+            continue
 
 
 @asynccontextmanager
@@ -29,7 +69,10 @@ async def lifespan(_app: FastAPI):
     db.init_db()
     # ~/Downloads watcher: any .json/.jsonl dropped there feeds the live tape
     watch_task = asyncio.create_task(watcher.run_watcher())
+    global _BASELINE_TASK
+    _BASELINE_TASK = asyncio.create_task(_baseline_loop())
     yield
+    _BASELINE_TASK.cancel()
     watch_task.cancel()
 
 
@@ -417,9 +460,22 @@ def _ingest_sync(visitor: str, multiplier: float, source: str,
     # analyze on the same tape, doubling the per-round CPU cost.
     locked = _arm_prediction(visitor, force=True, analysis=analysis) if analysis else None
 
+    # Realtime projection on top of the cached heavy baseline. This is the one
+    # figure that must re-commit the instant a round lands, so it is computed
+    # here rather than waited for on the next scheduled pass. Cheap by design
+    # (one tail fit + O(window) scans) — see realtime.py.
+    live = realtime.advance(visitor, tape, edge)
+
+    # `context` stays the strategies.live_context payload: it is the richer
+    # shape (pressure, volatility, gamblersFallacyWarning) that the store and
+    # the responsible-gambling banner already consume, and realtime's cheaper
+    # context intentionally omits those. The realtime figures ship alongside it
+    # in `realtime` rather than overwriting it.
     return {"type": "round", "round": row, "resolved": resolved, "locked": locked,
             "context": context, "alerts": fired,
-            "state": analysis["state"] if analysis else None}
+            "state": analysis["state"] if analysis else None,
+            "realtime": live["projection"], "baseline": live["baseline"],
+            "revision": live["revision"]}
 
 
 async def _ingest(visitor: str, multiplier: float, source: str,
@@ -452,8 +508,13 @@ async def post_rounds_bulk(body: BulkIn,
     v = visitor_of(x_visitor_id)
     if body.mode == "replace":
         db.clear_rounds(v)
+        # The cached heavy tier measured the tape we just discarded.
+        realtime.invalidate(v)
     values = [round(m, 2) for m in body.multipliers if m >= 1.0]
     n = db.insert_rounds_bulk(values, v, source="import")
+    # A bulk append moves the tape by far more than one round, so the scheduled
+    # snapshot the live tier sits on is no longer the right baseline for it.
+    realtime.invalidate(v)
     locked = _arm_prediction(v, force=True)
     await hub.broadcast(v, {"type": "bulk", "inserted": n, "total": db.count_rounds(v)})
     return {"inserted": n, "skipped": len(body.multipliers) - n, "total": db.count_rounds(v),
@@ -480,7 +541,10 @@ def remove_round(round_id: int,
 @api.delete("/rounds")
 def clear_all_rounds(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
     v = visitor_of(x_visitor_id)
-    return {"deleted": db.clear_rounds(v)}
+    deleted = db.clear_rounds(v)
+    # An empty tape must not keep serving a heavy tier measured on the old one.
+    realtime.invalidate(v)
+    return {"deleted": deleted}
 
 
 @api.post("/rounds/reseed")
@@ -495,6 +559,8 @@ def reseed(count: int = Query(default=900, ge=50, le=5000),
     db.clear_rounds(v)
     tape = fairness.generate_provable_tape(ss, cs, count=count, house_edge=edge)
     db.insert_rounds_bulk(tape, v, source="provably-fair-seed")
+    # The replaced tape invalidates every measurement taken against the old one.
+    realtime.invalidate(v)
     locked = _arm_prediction(v, force=True)
     return {"inserted": len(tape), "serverSeed": ss, "clientSeed": cs,
             "serverSeedHash": fairness.sha256_hex(ss), "houseEdge": edge, "locked": locked}
@@ -615,6 +681,9 @@ async def ingest_db_commit(body: DbIngestIn,
     })
     result["locked"] = _arm_prediction(v, force=True)
     ingest.discard_upload(body.uploadId)
+    # A database import rewrites the tape the engines measure, so the cached
+    # heavy tier (randomness verdict, phases, window odds) is now stale.
+    realtime.invalidate(v)
     await hub.broadcast(v, {"type": "bulk", "inserted": inserted, "total": total})
     return result
 
@@ -756,6 +825,81 @@ def get_dna(patternLen: int = Query(default=8, ge=3, le=24),
 def get_context(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
     v = visitor_of(x_visitor_id)
     return strategies.live_context(_tape(v), db.get_settings(v)["houseEdge"])
+
+@api.get("/stats/realtime")
+def stats_realtime(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
+    """Baseline + live projection + how far the live figures have drifted off it.
+
+    The composed read of the two tiers: `realtime` re-commits every round,
+    `baseline` moves over hundreds of rounds, `delta` makes the layering
+    auditable rather than a claim about freshness.
+    """
+    v = visitor_of(x_visitor_id)
+    return realtime.summary(v, _tape(v), db.get_settings(v)["houseEdge"], db.recent_rounds(1000, v))
+
+@api.get("/stats/shape")
+def stats_shape(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
+    """The drawn "chart prediction": projected shape, realized path, ETAs.
+
+    A shape rather than a number — the calibrated distribution over the horizon
+    in the same [0, 1] drawing space as the tape that actually printed, so the
+    Chart Lab can overlay them and show the projection confirming or failing in
+    place. `fairPath` rides along because a fair game sits on (1-h)/x.
+    """
+    v = visitor_of(x_visitor_id)
+    tape = _tape(v)
+    if len(tape) < 30:
+        raise HTTPException(status_code=422, detail="need at least 30 rounds")
+    return realtime.shape_forecast(tape, db.get_settings(v)["houseEdge"])
+
+@api.get("/stats/baseline")
+def stats_baseline(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
+    """The scheduled heavy tier alone: fairness, earned skill, phases, window odds.
+
+    Exposed separately so the panels that only want the slow-moving tier do not
+    pay for a projection, and so the scheduler's freshness is inspectable.
+    """
+    v = visitor_of(x_visitor_id)
+    tape = _tape(v)
+    edge = db.get_settings(v)["houseEdge"]
+    realtime.run_baseline(v, tape, edge, db.recent_rounds(1000, v))
+    return realtime.summary(v, tape, edge)["baseline"]
+
+@api.get("/stats/ai-summary")
+def stats_ai_summary(force: bool = False,
+                     x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
+    """The overall AI-analysed summary of every metric the two tiers publish.
+
+    Server-side and synchronous like every other analytics route: the key stays
+    in the backend process and never reaches the browser, and the kernel call it
+    depends on is CPU-bound. `ai_summary.summarize` never raises — a missing key,
+    a gateway timeout or a prose answer all return `available: False` (or a
+    degraded payload) so the dashboard keeps rendering.
+    """
+    v = visitor_of(x_visitor_id)
+    tape = _tape(v)
+    edge = db.get_settings(v)["houseEdge"]
+    composed = realtime.summary(v, tape, edge, db.recent_rounds(1000, v))
+    return ai_summary.summarize(v, composed, db.get_settings(v), force=force)
+
+@api.get("/stats/ai-status")
+def stats_ai_status() -> Dict[str, Any]:
+    """Whether the summary can run at all, and against which model.
+
+    Deliberately reports configuration only — never the key, and never a guess
+    about reachability, which would need a live call on a status endpoint.
+    """
+    cfg = ai_summary.config()
+    return {
+        "available": ai_summary.available(),
+        "configured": bool(cfg["apiKey"]),
+        "baseUrl": cfg["baseUrl"],
+        "model": cfg["model"],
+        # The *effective* TTL, not the default: it is overridable by
+        # ENTRIM_TTL_S and the reader of a status endpoint wants the value in
+        # force. A non-positive TTL means the cache is off.
+        "cacheTtlMs": int(cfg["ttlS"] * 1000),
+    }
 
 
 @api.get("/stats/summary")

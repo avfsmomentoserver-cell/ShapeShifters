@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ChartLab } from "../components/chartlab/ChartLab";
+import { ChartPrediction } from "../components/ChartPrediction";
 import type { Annotation, AnnotationKind } from "../components/chartlab/engine";
 import { describeAnnotation } from "../components/chartlab/engine";
 import { type ChartId, VIEWS, viewById } from "../components/chartlab/views";
@@ -226,6 +227,9 @@ export default function Charts() {
           </dl>
         </Panel>
       </div>
+
+      {/* the projected shape, drawn and decomposed — under the lab it belongs to */}
+      <ChartPrediction />
 
       <Panel className="mt-4" title="reading these charts honestly">
         <div className="grid gap-3 sm:grid-cols-3">

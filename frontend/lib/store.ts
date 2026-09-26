@@ -11,11 +11,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   openRoundSocket,
+  type AiStatus,
   type AlertEventRow,
   type ApiRound,
   type LiveContext,
   type LiveMessage,
+  type MultiTimeframeData,
   type PredictionEntry,
+  type RealtimeBaseline,
+  type RealtimeDelta,
+  type RealtimeProjection,
+  type RealtimeSummary,
   type Settings,
 } from "./api";
 import { createContextHook } from "./create-context-hook";
@@ -41,6 +47,16 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
   const [openPrediction, setOpenPrediction] = useState<PredictionEntry | null>(null);
   const [alertFeed, setAlertFeed] = useState<AlertEventRow[]>([]);
   const [total, setTotal] = useState(0);
+  // The realtime projection, the scheduled baseline it composes on, and the
+  // revision they belong to. Held here rather than fetched by each panel so a
+  // live frame and a poll can never disagree about which round the figures
+  // describe.
+  const [realtime, setRealtime] = useState<RealtimeProjection | null>(null);
+  const [realtimeBaseline, setRealtimeBaseline] = useState<RealtimeBaseline | null>(null);
+  const [realtimeDelta, setRealtimeDelta] = useState<RealtimeDelta | null>(null);
+  const [realtimeAt, setRealtimeAt] = useState(0);
+  const [multiTimeframe, setMultiTimeframe] = useState<MultiTimeframeData | null>(null);
+  const revisionRef = useRef(0);
   const mounted = useRef(true);
   const newestRef = useRef(0);
   // Mirror of `total` for interval callbacks that must not re-arm on every
@@ -75,9 +91,37 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     }
   }, []);
 
+  /**
+   * Pull the live projection. Separate from `refresh` and deliberately not
+   * allowed to reject into the tape's error state: the projection is an
+   * enhancement, and a panel that lost its headline must not blank the tape.
+   *
+   * This is also the dropped-frame recovery path — the hosted preview proxy can
+   * drop websocket frames, and without this the realtime figures would freeze on
+   * the last frame while the tape kept growing.
+   */
+  const refreshRealtime = useCallback(async () => {
+    try {
+      const body = await api.get<RealtimeSummary>("/stats/realtime");
+      if (!mounted.current) return;
+      // A poll can land after a newer live frame; the revision is monotonic, so
+      // never let a slower read overwrite figures for a later round.
+      if (body.revision < revisionRef.current) return;
+      revisionRef.current = body.revision;
+      setRealtime(body.realtime);
+      setRealtimeBaseline(body.baseline);
+      setRealtimeDelta(body.delta);
+      setMultiTimeframe(body.multiTimeframe ?? null);
+      setRealtimeAt(Date.now());
+    } catch {
+      /* the next tick retries; the tape continues regardless */
+    }
+  }, []);
+
   useEffect(() => {
     mounted.current = true;
     void refresh();
+    void refreshRealtime();
     api.get<LiveContext>("/context").then(setContext).catch(() => undefined);
     api.get<{ running: boolean }>("/sim/status").then((s) => setSimulatorRunning(s.running)).catch(() => undefined);
     return () => {
@@ -96,13 +140,24 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
         setOpenPrediction(msg.locked);
         setLastAddedAt(Date.now());
         if (msg.alerts?.length) setAlertFeed((prev) => [...msg.alerts, ...prev].slice(0, 40));
+        // The realtime projection rides on the frame, so the headline numbers
+        // update on the same tick as the round itself rather than one poll later.
+        if (msg.realtime && (msg.revision ?? 0) >= revisionRef.current) {
+          revisionRef.current = msg.revision ?? revisionRef.current;
+          setRealtime(msg.realtime);
+          // A live frame carries the baseline freshness and the drift too, so the
+          // composition badge updates on the same tick as the round.
+          if (msg.baseline) setRealtimeBaseline(msg.baseline);
+          setRealtimeAt(Date.now());
+        }
       } else if (msg.type === "bulk") {
         setTotal(msg.total);
         void refresh();
+        void refreshRealtime();
       }
     }, setConn);
     return stop;
-  }, [refresh]);
+  }, [refresh, refreshRealtime]);
 
   // Catch-up after a socket outage. Frames lost while the proxy dropped the
   // connection never re-arrive — the server has already broadcast them — so on
@@ -141,6 +196,7 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     const tick = () => {
       if (document.hidden) return; // nobody is watching; the probe still runs
       void refresh();
+      void refreshRealtime();
       api.get<LiveContext>("/context").then(setContext).catch(() => undefined);
     };
     const probe = async () => {
@@ -163,7 +219,7 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
       clearInterval(slow);
       document.removeEventListener("visibilitychange", wake);
     };
-  }, [lastAddedAt, refresh, settings?.liveFeedIntervalMs, conn]);
+  }, [lastAddedAt, refresh, refreshRealtime, settings?.liveFeedIntervalMs, conn]);
 
   const setIsLive = useCallback(async (next: boolean) => {
     // Guard: the generator is opt-in. The tape is normally fed by the file
@@ -267,5 +323,11 @@ export const [RoundProvider, useRounds] = createContextHook(() => {
     context,
     openPrediction,
     alertFeed,
+    realtime,
+    realtimeBaseline,
+    realtimeDelta,
+    realtimeAt,
+    multiTimeframe,
+    refreshRealtime,
   };
 });
