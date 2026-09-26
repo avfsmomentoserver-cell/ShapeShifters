@@ -73,7 +73,7 @@ const CHART_LINES: Array<{ t: number; c: string; leg: "big" | "band" }> = [
 ];
 
 export function FullForecast({ analysis }: { analysis: Analysis | null }) {
-  const { rounds, multipliers, lastAddedAt } = useRounds();
+  const { rounds, multipliers, lastAddedAt, multiTimeframe } = useRounds();
   const seed = useSeedEvidence();
 
   // The verification replays the recorded tape walk-forward — at each
@@ -107,6 +107,9 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
 
   const f = analysis.forecast;
   const sAt = analysis.survivalAt;
+  
+  // Use multi-timeframe stacked target when available, fallback to analysis target
+  const displayTarget = multiTimeframe?.available ? multiTimeframe.stackedTarget : analysis.target;
 
   return (
     <div className="panel scanline relative overflow-hidden ring-1 ring-primary/20">
@@ -131,17 +134,18 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
               />
               <span
                 className="font-mono-num text-sm font-semibold"
-                style={{ color: analysis.expectedValue.deltaPerRound >= 0 ? "#2bd97c" : "#ff4d5e" }}
+                style={{ color: (analysis.expectedValue.responsiveDelta ?? analysis.expectedValue.deltaPerRound) >= 0 ? "#2bd97c" : "#ff4d5e" }}
               >
-                {analysis.expectedValue.deltaPerRound >= 0 ? "▲" : "▼"}
-                {Math.abs(analysis.expectedValue.deltaPerRound).toFixed(4)}
+                {(analysis.expectedValue.responsiveDelta ?? analysis.expectedValue.deltaPerRound) >= 0 ? "▲" : "▼"}
+                {Math.abs(analysis.expectedValue.responsiveDelta ?? analysis.expectedValue.deltaPerRound).toFixed(4)}
               </span>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              {analysis.expectedValue.distributionBased ? "distribution-based (survival curve integration)" : `recency-weighted mean (half-life ${analysis.expectedValue.halfLife} rounds)`} · re-commits every
+              {analysis.expectedValue.distributionBased ? "robust (stable) + responsive (trend)" : `recency-weighted mean (half-life ${analysis.expectedValue.halfLife} rounds)`} · re-commits every
               round (Δ shown) ·
               state <span className="font-mono-num" style={{ color: colorFor(f.p50) }}>{analysis.state}</span> ·
-              median {fmtX(f.p50)}× (robust)
+              median {fmtX(displayTarget.median)}× (robust)
+              {multiTimeframe?.available && <span className="ml-2 text-accent">· multi-timeframe stacked</span>}
             </p>
           </div>
 
@@ -175,6 +179,15 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
               hi={analysis.expectedValue.max}
               sub={`no cap — max ${fmtX(analysis.expectedValue.max)}× on ${analysis.expectedValue.n.toLocaleString()} rounds`}
             />
+            {multiTimeframe?.available && (
+              <RangeRow
+                tone="tight"
+                label="multi-timeframe stacked"
+                lo={displayTarget.p25}
+                hi={displayTarget.p90}
+                sub={`median ${fmtX(displayTarget.median)}×`}
+              />
+            )}
           </div>
 
           {/* seed evidence — the estimate validated against prior data */}
@@ -186,6 +199,36 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
             <Diag label="P(≥2×)" value={`${(sAt(2) * 100).toFixed(1)}%`} />
             <Diag label="P(≥10×)" value={`${(sAt(10) * 100).toFixed(2)}%`} />
           </div>
+          {analysis.expectedValue.responsive && (
+            <div className="mt-2 rounded border border-border/70 bg-secondary/30 px-2.5 py-1.5">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground">responsive trend</p>
+                <span className="font-mono-num text-sm font-semibold">
+                  {fmtX(analysis.expectedValue.responsive)}×
+                </span>
+              </div>
+              <p className="mt-1 text-[9px] text-muted-foreground">
+                EMA on recent window · more sensitive to trend changes vs robust headline
+              </p>
+            </div>
+          )}
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            E[X] is the arithmetic mean of the whole tape — it carries the entire tail
+            (no upper bound) and re-commits with every round. The median is the robust
+            sub-mark: it barely moves by design. The tail α shows how heavy the right
+            tail is: <span className="font-mono-num">α &gt; 1</span> decays faster than fair,
+            <span className="font-mono-num"> α &lt; 1</span> fatter.
+          </p>
+          {multiTimeframe?.available && (
+            <div className="mt-2 rounded border border-accent/30 bg-accent/5 px-2.5 py-1.5">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase tracking-widest text-accent">multi-timeframe analysis</p>
+                <span className="text-[9px] text-muted-foreground">
+                  large: {multiTimeframe.large.rounds.toLocaleString()} · medium: {multiTimeframe.medium.rounds.toLocaleString()} · current: {multiTimeframe.current.rounds.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          )}
           <p className="text-[10px] leading-relaxed text-muted-foreground">
             E[X] is the arithmetic mean of the whole tape — it carries the entire tail
             (no upper bound) and re-commits with every round. The median is the robust
@@ -197,7 +240,7 @@ export function FullForecast({ analysis }: { analysis: Analysis | null }) {
 
         {/* RIGHT — adaptive log-scale distribution + quantile ladder */}
         <div className="min-w-0 space-y-3">
-          <ForecastChart analysis={analysis} f={f} maxX={niceCeil(Math.max(20, f.p99 * 1.15, 100))} />
+          <ForecastChart analysis={analysis} f={f} displayTarget={displayTarget} maxX={niceCeil(Math.max(20, f.p99 * 1.15, 100))} />
           <QuantileLadder f={f} />
         </div>
       </div>
@@ -569,7 +612,7 @@ function QuantileLadder({ f }: { f: Analysis["forecast"] }) {
  * and a 55.98x target both sit comfortably on the same axis. Shows the full
  * calibrated curve, the tight band, the expected target, and the big-hit lines.
  */
-function ForecastChart({ analysis, f, maxX }: { analysis: Analysis; f: Analysis["forecast"]; maxX: number }) {
+function ForecastChart({ analysis, f, displayTarget, maxX }: { analysis: Analysis; f: Analysis["forecast"]; displayTarget: { median: number; p25: number; p90: number }; maxX: number }) {
   const pts = survivalCurveLog(analysis, maxX, 70);
   const W = 640, H = 220, PAD_L = 34, PAD_R = 14, PAD_T = 14, PAD_B = 26;
   const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
@@ -578,7 +621,7 @@ function ForecastChart({ analysis, f, maxX }: { analysis: Analysis; f: Analysis[
 
   const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${X(p.x).toFixed(1)},${Y(p.p).toFixed(1)}`).join(" ");
   const area = `${line} L${X(maxX).toFixed(1)},${Y(0).toFixed(1)} L${X(1).toFixed(1)},${Y(0).toFixed(1)} Z`;
-  const targetC = colorFor(f.p50);
+  const targetC = colorFor(displayTarget.median);
   const xTicks = X_TICKS.filter((t) => t <= maxX);
 
   return (
@@ -616,10 +659,10 @@ function ForecastChart({ analysis, f, maxX }: { analysis: Analysis; f: Analysis[
           </g>
         ))}
         {/* expected target marker */}
-        <line x1={X(f.p50)} x2={X(f.p50)} y1={PAD_T} y2={PAD_T + plotH} stroke={targetC} strokeWidth={1.4} />
-        <circle cx={X(f.p50)} cy={Y(0.5)} r={3.2} fill={targetC} />
-        <text x={Math.min(W - PAD_R - 6, X(f.p50) + 5)} y={Y(0.5) - 6} fontSize="10" fontWeight="700" fill={targetC}>
-          {fmtX(f.p50)}×
+        <line x1={X(displayTarget.median)} x2={X(displayTarget.median)} y1={PAD_T} y2={PAD_T + plotH} stroke={targetC} strokeWidth={1.4} />
+        <circle cx={X(displayTarget.median)} cy={Y(0.5)} r={3.2} fill={targetC} />
+        <text x={Math.min(W - PAD_R - 6, X(displayTarget.median) + 5)} y={Y(0.5) - 6} fontSize="10" fontWeight="700" fill={targetC}>
+          {fmtX(displayTarget.median)}×
         </text>
         {/* x ticks (log) */}
         {xTicks.map((t) => (

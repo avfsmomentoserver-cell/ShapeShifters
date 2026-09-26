@@ -113,7 +113,7 @@ class VisitorState:
                  "large_at", "large_ms", "large_ok",
                  "medium_projection", "medium_rounds",
                  "medium_at", "medium_ms", "medium_ok",
-                 "revision", "last_round_id")
+                 "revision", "last_round_id", "prev_ev", "prev_responsive")
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -143,6 +143,9 @@ class VisitorState:
         # read, so two polls of an unchanged tape report the same revision.
         self.revision = 0
         self.last_round_id = 0
+        # Track previous EV for delta calculation per visitor
+        self.prev_ev = 1.0
+        self.prev_responsive = 1.0
 
 
 _STATES: Dict[str, VisitorState] = {}
@@ -232,66 +235,47 @@ def hit_eta(survivalAt: Callable[[float], float], threshold: float) -> Dict[str,
     }
 
 
-def _expected_value(multipliers: Sequence[float], survival_at: Callable[[float], float]) -> Dict[str, Any]:
-    """Full distribution-based expected value with pressure and ladder analysis.
+def _expected_value(multipliers: Sequence[float], survival_at: Callable[[float], float], prev_ev: float = 1.0, prev_responsive: float = 1.0) -> Dict[str, Any]:
+    """Conservative expected value based on actual recent distribution.
     
-    Computes E[X] using a weighted combination of:
-    1. Empirical mean (50% weight) - actual distribution center
-    2. Distribution-weighted mean (30% weight) - survival curve integration
-    3. Pressure-adjusted mean (20% weight) - accounts for ladder/pressure analysis
+    Uses robust statistics to avoid overestimation:
+    1. Trimmed mean (remove top 5% outliers) - reflects typical distribution
+    2. Median-based headline - most robust to outliers
+    3. Recent window focus (600 rounds) - ignores ancient history
     
-    This gives a comprehensive view of the distribution rather than a simple mean.
+    This produces realistic values that reflect that most crash games have
+    the majority of rounds in the 1x-2x range, with EV typically around 1.5-2x.
     """
     n = len(multipliers)
     if not n:
-        return {"full": 1.0, "recent": 1.0, "ema": 1.0, "deltaPerRound": 0.0,
+        return {"full": 1.0, "recent": 1.0, "ema": 1.0, "responsive": 1.0, "deltaPerRound": 0.0, "responsiveDelta": 0.0,
                 "halfLife": EV_EMA_HALF_LIFE, "n": 0, "max": 1.0}
     
     window = list(multipliers[-WINDOW:]) if len(multipliers) >= WINDOW else list(multipliers)
     
-    # 1. Empirical mean (50% weight)
-    empirical_mean = sum(window) / len(window) if window else 1.0
-    
-    # 2. Distribution-weighted mean using survival curve (30% weight)
-    # Integrate E[X] = ∫₀^∞ S(x) dx with appropriate bounds
-    max_x = min(50.0, max(window) * 2)  # Upper bound based on actual data
-    steps = 500
-    dx = max_x / steps
-    integral = 0.0
-    for i in range(steps):
-        x = (i + 0.5) * dx
-        integral += survival_at(x) * dx
-    distribution_mean = integral
-    
-    # 3. Pressure-adjusted mean (20% weight)
-    # Weight rounds based on their position in ladders and pressure
-    # Higher multipliers get less weight in pressure analysis
+    # Remove top 5% outliers for trimmed mean (focus on typical distribution)
     sorted_window = sorted(window)
-    pressure_weights = []
-    for m in window:
-        # Pressure weight: lower multipliers get higher weight (more typical)
-        # This reduces the influence of outliers on the mean
-        if m <= 2.0:
-            weight = 1.0
-        elif m <= 5.0:
-            weight = 0.8
-        elif m <= 10.0:
-            weight = 0.6
-        elif m <= 20.0:
-            weight = 0.4
-        else:
-            weight = 0.2
-        pressure_weights.append(weight)
+    trim_count = max(1, len(sorted_window) // 20)  # Remove top 5%
+    trimmed_window = sorted_window[:-trim_count] if trim_count > 0 else sorted_window
+    trimmed_mean = sum(trimmed_window) / len(trimmed_window) if trimmed_window else 1.0
     
-    pressure_mean = sum(m * w for m, w in zip(window, pressure_weights)) / sum(pressure_weights) if pressure_weights else empirical_mean
+    # Median for robust headline (most resistant to outliers)
+    median = sorted_window[len(sorted_window) // 2] if sorted_window else 1.0
     
-    # Combined weighted expected value
-    combined_ev = (empirical_mean * 0.5) + (distribution_mean * 0.3) + (pressure_mean * 0.2)
+    # Use weighted combination: 70% trimmed mean + 30% median
+    # This gives a realistic EV that reflects typical distribution
+    robust_ev = (trimmed_mean * 0.7) + (median * 0.3)
     
-    # Track previous value for delta calculation
-    prev_ev = getattr(_expected_value, "_prev_ev", 1.0)
-    delta = combined_ev - prev_ev
-    _expected_value._prev_ev = combined_ev
+    # === RESPONSIVE EV (trend-sensitive) ===
+    # EMA on recent window for faster response to changes
+    alpha = 1 - math.pow(2, -1 / EV_EMA_HALF_LIFE)
+    responsive_ev = window[0]
+    for i in range(1, len(window)):
+        responsive_ev += alpha * (window[i] - responsive_ev)
+    
+    # Calculate deltas
+    robust_delta = robust_ev - prev_ev
+    responsive_delta = responsive_ev - prev_responsive
     
     # Full tape mean for comparison
     full_mean = sum(multipliers) / n
@@ -301,16 +285,17 @@ def _expected_value(multipliers: Sequence[float], survival_at: Callable[[float],
     return {
         "full": round(full_mean, 4), 
         "recent": round(recent_mean, 4), 
-        "ema": round(combined_ev, 4),  # Combined distribution-based EV
-        "deltaPerRound": round(delta, 4), 
+        "ema": round(robust_ev, 4),  # Robust trimmed-mean-based EV (headline)
+        "responsive": round(responsive_ev, 4),  # Responsive EMA-based EV (trend)
+        "deltaPerRound": round(robust_delta, 4),  # Delta for robust EV
+        "responsiveDelta": round(responsive_delta, 4),  # Delta for responsive EV
         "halfLife": EV_EMA_HALF_LIFE,
         "n": n, 
         "max": max(multipliers),
         "distributionBased": True,
         "components": {
-            "empirical": round(empirical_mean, 4),
-            "distribution": round(distribution_mean, 4),
-            "pressure": round(pressure_mean, 4),
+            "trimmedMean": round(trimmed_mean, 4),
+            "median": round(median, 4),
         },
     }
 
@@ -340,7 +325,7 @@ def _live_context(multipliers: Sequence[float], house_edge: float) -> Dict[str, 
 
 
 def project(multipliers: Sequence[float], house_edge: float,
-            label: str = "live") -> Dict[str, Any]:
+            label: str = "live", prev_ev: float = 1.0, prev_responsive: float = 1.0) -> Dict[str, Any]:
     """The realtime tier: everything that must re-commit when a round lands.
 
     One tail fit, a handful of O(window) scans, and a bisection per quantile.
@@ -384,7 +369,7 @@ def project(multipliers: Sequence[float], house_edge: float,
             "extreme": [ladder["p01"], ladder["p99"]],
             "iqr": round(ladder["p75"] - ladder["p25"], 2),
         },
-        "expectedValue": _expected_value(multipliers, survival_at),
+        "expectedValue": _expected_value(multipliers, survival_at, prev_ev, prev_responsive),
         "context": _live_context(multipliers, house_edge),
         "exceedance": {
             "rows": exceed["rows"],
@@ -505,11 +490,19 @@ def run_large_window(visitor: str, multipliers: Sequence[float], house_edge: flo
     def survival_at(x: float) -> float:
         return sv.survival(window, x, tail)
     
-    projection = project(tape, house_edge, label="large")
+    with st.lock:
+        prev_ev = st.prev_ev
+        prev_responsive = st.prev_responsive
+    
+    projection = project(tape, house_edge, label="large", prev_ev=prev_ev, prev_responsive=prev_responsive)
     projection["window"] = len(window)
     projection["tailAlpha"] = round(tail["alpha"], 4)
     # Override with distribution-based EV for this window
-    projection["expectedValue"] = _expected_value(window, survival_at)
+    projection["expectedValue"] = _expected_value(window, survival_at, prev_ev, prev_responsive)
+    
+    # Update prev_ev for next round
+    new_ev = projection["expectedValue"]["ema"]
+    new_responsive = projection["expectedValue"]["responsive"]
     
     elapsed = round((time.perf_counter() - started) * 1000, 1)
     with st.lock:
@@ -518,6 +511,8 @@ def run_large_window(visitor: str, multipliers: Sequence[float], house_edge: flo
         st.large_at = time.time()
         st.large_ms = elapsed
         st.large_ok = True
+        st.prev_ev = new_ev
+        st.prev_responsive = new_responsive
 
 
 def run_medium_window(visitor: str, multipliers: Sequence[float], house_edge: float,
@@ -540,11 +535,19 @@ def run_medium_window(visitor: str, multipliers: Sequence[float], house_edge: fl
     def survival_at(x: float) -> float:
         return sv.survival(window, x, tail)
     
-    projection = project(tape, house_edge, label="medium")
+    with st.lock:
+        prev_ev = st.prev_ev
+        prev_responsive = st.prev_responsive
+    
+    projection = project(tape, house_edge, label="medium", prev_ev=prev_ev, prev_responsive=prev_responsive)
     projection["window"] = len(window)
     projection["tailAlpha"] = round(tail["alpha"], 4)
     # Override with distribution-based EV for this window
-    projection["expectedValue"] = _expected_value(window, survival_at)
+    projection["expectedValue"] = _expected_value(window, survival_at, prev_ev, prev_responsive)
+    
+    # Update prev_ev for next round
+    new_ev = projection["expectedValue"]["ema"]
+    new_responsive = projection["expectedValue"]["responsive"]
     
     elapsed = round((time.perf_counter() - started) * 1000, 1)
     with st.lock:
@@ -553,6 +556,8 @@ def run_medium_window(visitor: str, multipliers: Sequence[float], house_edge: fl
         st.medium_at = time.time()
         st.medium_ms = elapsed
         st.medium_ok = True
+        st.prev_ev = new_ev
+        st.prev_responsive = new_responsive
 
 
 def check_refresh_needed(visitor: str, current_rounds: int) -> Dict[str, bool]:
@@ -682,8 +687,18 @@ def _compose(st: VisitorState, visitor: str, multipliers: Sequence[float],
     disagreeing about the same round.
     """
     started = time.perf_counter()
-    projection = project(multipliers, house_edge, label="live")
+    with st.lock:
+        prev_ev = st.prev_ev
+        prev_responsive = st.prev_responsive
+    projection = project(multipliers, house_edge, label="live", prev_ev=prev_ev, prev_responsive=prev_responsive)
     projection["costMs"] = round((time.perf_counter() - started) * 1000, 2)
+    
+    # Update prev_ev for next round
+    new_ev = projection["expectedValue"]["ema"]
+    new_responsive = projection["expectedValue"]["responsive"]
+    with st.lock:
+        st.prev_ev = new_ev
+        st.prev_responsive = new_responsive
 
     with st.lock:
         baseline_rounds = st.baseline_rounds
@@ -723,10 +738,9 @@ def _compose_stacked(st: VisitorState, visitor: str, multipliers: Sequence[float
     immediate predictions while larger windows provide structural context.
     """
     started = time.perf_counter()
-    projection = project(multipliers, house_edge, label="live")
-    projection["costMs"] = round((time.perf_counter() - started) * 1000, 2)
-
     with st.lock:
+        prev_ev = st.prev_ev
+        prev_responsive = st.prev_responsive
         baseline_rounds = st.baseline_rounds
         baseline_projection = st.baseline_projection
         baseline_at = st.baseline_at
@@ -739,11 +753,20 @@ def _compose_stacked(st: VisitorState, visitor: str, multipliers: Sequence[float
         large_projection = st.large_projection
         large_at = st.large_at
         large_rounds = st.large_rounds
-        
         medium_ok = st.medium_ok
         medium_projection = st.medium_projection
         medium_at = st.medium_at
         medium_rounds = st.medium_rounds
+
+    projection = project(multipliers, house_edge, label="live", prev_ev=prev_ev, prev_responsive=prev_responsive)
+    projection["costMs"] = round((time.perf_counter() - started) * 1000, 2)
+    
+    # Update prev_ev for next round
+    new_ev = projection["expectedValue"]["ema"]
+    new_responsive = projection["expectedValue"]["responsive"]
+    with st.lock:
+        st.prev_ev = new_ev
+        st.prev_responsive = new_responsive
 
     # Compose stacked prediction: weighted combination of timeframes
     # Current window gets highest weight (60%), medium (30%), large (10%)

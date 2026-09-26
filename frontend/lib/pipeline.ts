@@ -324,7 +324,7 @@ export function analyze(multipliers: number[]): Analysis {
     survivalAt,
     target: targetForecast(survivalAt),
     forecast: fullForecast(survivalAt),
-    expectedValue: expectedValue(multipliers, survivalAt),
+    expectedValue: expectedValue(multipliers, survivalAt, 1, 1), // Frontend can't track prev values, backend provides deltas
     tailAlpha: tail.alpha,
     hitEtas,
     bandHitEtas: hitBandEtas(survivalAt),
@@ -520,10 +520,14 @@ export interface ExpectedValue {
   full: number;
   /** Mean of the last 200 rounds — the current regime's estimate (drifts with the tape). */
   recent: number;
-  /** Distribution-based combined mean — the live E[next round] headline. */
+  /** Distribution-based robust mean — the live E[next round] headline (stable). */
   ema: number;
+  /** Responsive EMA-based EV — trend-sensitive alternative to robust headline. */
+  responsive?: number;
   /** ema − ema(one round earlier): the per-round re-commit step of the headline. */
   deltaPerRound: number;
+  /** responsiveDelta − responsiveDelta(one round earlier): trend-sensitive delta. */
+  responsiveDelta?: number;
   /** Half-life of the headline EMA, in rounds (if using EMA). */
   halfLife: number;
   /** Rounds used for `full`. */
@@ -534,13 +538,12 @@ export interface ExpectedValue {
   distributionBased?: boolean;
   /** Component breakdown when distribution-based. */
   components?: {
-    empirical: number;
-    distribution: number;
-    pressure: number;
+    trimmedMean: number;
+    median: number;
   };
 }
 
-export function expectedValue(multipliers: number[], survivalAt?: (x: number) => number): ExpectedValue {
+export function expectedValue(multipliers: number[], survivalAt?: (x: number) => number, prevEv: number = 1, prevResponsive: number = 1): ExpectedValue {
   const n = multipliers.length;
   if (!n) {
     return { full: 1, recent: 1, ema: 1, deltaPerRound: 0, halfLife: EV_EMA_HALF_LIFE, n: 0, max: 1 };
@@ -554,56 +557,49 @@ export function expectedValue(multipliers: number[], survivalAt?: (x: number) =>
   const recentWindow = multipliers.slice(-200);
   const recent = recentWindow.reduce((a, b) => a + b, 0) / recentWindow.length;
   
-  // Use distribution-based EV if survival function is provided
+  // Use robust statistics if survival function is provided
   if (survivalAt) {
     const window = multipliers.slice(-600);
     
-    // 1. Empirical mean (50% weight)
-    const empiricalMean = window.reduce((a, b) => a + b, 0) / window.length;
+    // === ROBUST EV (stable, long-term) ===
+    // Trimmed mean: remove top 5% outliers
+    const sortedWindow = [...window].sort((a, b) => a - b);
+    const trimCount = Math.max(1, Math.floor(sortedWindow.length / 20));
+    const trimmedWindow = sortedWindow.slice(0, -trimCount || undefined);
+    const trimmedMean = trimmedWindow.reduce((a, b) => a + b, 0) / trimmedWindow.length;
     
-    // 2. Distribution-weighted mean using survival curve (30% weight)
-    const maxX = Math.min(50, Math.max(...window) * 2);
-    const steps = 500;
-    const dx = maxX / steps;
-    let integral = 0;
-    for (let i = 0; i < steps; i++) {
-      const x = (i + 0.5) * dx;
-      integral += survivalAt(x) * dx;
+    // Median for robust headline
+    const median = sortedWindow[Math.floor(sortedWindow.length / 2)] || 1;
+    
+    // Weighted combination: 70% trimmed mean + 30% median
+    const robustEv = (trimmedMean * 0.7) + (median * 0.3);
+    
+    // === RESPONSIVE EV (trend-sensitive) ===
+    // EMA on recent window for faster response to changes
+    const alpha = 1 - Math.pow(2, -1 / EV_EMA_HALF_LIFE);
+    let responsiveEv = window[0];
+    for (let i = 1; i < window.length; i++) {
+      responsiveEv += alpha * (window[i] - responsiveEv);
     }
-    const distributionMean = integral;
     
-    // 3. Pressure-adjusted mean (20% weight)
-    const pressureWeights = window.map(m => {
-      if (m <= 2.0) return 1.0;
-      if (m <= 5.0) return 0.8;
-      if (m <= 10.0) return 0.6;
-      if (m <= 20.0) return 0.4;
-      return 0.2;
-    });
-    const pressureMean = window.reduce((sum, m, i) => sum + m * pressureWeights[i], 0) / 
-                        pressureWeights.reduce((sum, w) => sum + w, 0);
-    
-    // Combined weighted expected value
-    const combinedEv = (empiricalMean * 0.5) + (distributionMean * 0.3) + (pressureMean * 0.2);
-    
-    // Track previous value for delta
-    const prevEv = (expectedValue as any)._prevEv ?? 1;
-    const delta = combinedEv - prevEv;
-    (expectedValue as any)._prevEv = combinedEv;
+    // Calculate deltas
+    const robustDelta = robustEv - prevEv;
+    const responsiveDelta = responsiveEv - prevResponsive;
     
     return {
       full: sum / n,
       recent,
-      ema: combinedEv,
-      deltaPerRound: delta,
+      ema: robustEv,
+      responsive: round2(responsiveEv),
+      deltaPerRound: round2(robustDelta),
+      responsiveDelta: round2(responsiveDelta),
       halfLife: EV_EMA_HALF_LIFE,
       n,
       max: mx,
       distributionBased: true,
       components: {
-        empirical: round2(empiricalMean),
-        distribution: round2(distributionMean),
-        pressure: round2(pressureMean),
+        trimmedMean: round2(trimmedMean),
+        median: round2(median),
       },
     };
   }

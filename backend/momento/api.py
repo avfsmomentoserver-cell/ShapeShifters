@@ -835,7 +835,7 @@ def stats_realtime(x_visitor_id: Optional[str] = Header(default=None, alias="X-V
     auditable rather than a claim about freshness.
     """
     v = visitor_of(x_visitor_id)
-    return realtime.summary(v, _tape(v), db.get_settings(v)["houseEdge"], db.recent_rounds(1000, v))
+    return realtime.summary(v, _tape(v, limit=6000), db.get_settings(v)["houseEdge"], db.recent_rounds(1000, v))
 
 @api.get("/stats/shape")
 def stats_shape(x_visitor_id: Optional[str] = Header(default=None, alias="X-Visitor-Id")) -> Dict[str, Any]:
